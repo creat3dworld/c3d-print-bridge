@@ -2,8 +2,11 @@
 #
 # Run AFTER the code is on the PC (see SETUP.md for the one-paste
 # command that fetches it). This script:
-#   1. Makes sure the .NET 8 SDK is available (installs it
-#      user-locally if missing — no admin rights needed).
+#   1. Makes sure the .NET 8 SDK is available. If it is missing,
+#      installs it with winget and restarts this installer in a
+#      fresh PowerShell window so the new .NET is picked up
+#      (no manual close/reopen). Falls back to a user-local
+#      install if winget is missing or fails.
 #   2. Builds the bridge from source and publishes it to
 #      $InstallDir\app (framework-dependent, win-x64).
 #   3. Creates bridge-config.json from the example file, if none
@@ -18,7 +21,8 @@
 
 param(
     [string]$InstallDir = "$env:USERPROFILE\C3DBridge",
-    [string]$SourceDir = $PSScriptRoot
+    [string]$SourceDir = $PSScriptRoot,
+    [switch]$DotnetRestarted
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,11 +32,45 @@ Write-Host "Source: $SourceDir"
 Write-Host "Install folder: $InstallDir"
 
 # --- 1. .NET 8 SDK ---------------------------------------------------
-$dotnet = $null
-if (Get-Command dotnet -ErrorAction SilentlyContinue) {
-    $sdks = dotnet --list-sdks 2>$null
-    if ($sdks -match '8\.') { $dotnet = 'dotnet' }
+function Test-Dotnet8 {
+    param([string]$Exe)
+    if (-not $Exe) { return $false }
+    try {
+        $out = & $Exe --list-sdks 2>$null
+        return ($out -match '8\.')
+    } catch {
+        return $false
+    }
 }
+
+# Check the PATH copy first, then the standard install folders
+# directly, so a fresh install is found even if PATH is stale.
+$dotnet = $null
+$candidates = @()
+if (Get-Command dotnet -ErrorAction SilentlyContinue) { $candidates += 'dotnet' }
+foreach ($path in @("$env:ProgramFiles\dotnet\dotnet.exe", "$env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe")) {
+    if (Test-Path $path) { $candidates += $path }
+}
+foreach ($candidate in $candidates) {
+    if (Test-Dotnet8 $candidate) { $dotnet = $candidate; break }
+}
+
+# Missing .NET: install it with winget, then restart this installer
+# in a fresh window so the new .NET is on the path. The
+# -DotnetRestarted flag stops this from looping: after one restart,
+# a still-missing .NET falls through to the user-local install below.
+if (-not $dotnet -and -not $DotnetRestarted -and (Get-Command winget -ErrorAction SilentlyContinue)) {
+    Write-Host '.NET 8 SDK not found — installing it with winget, then restarting this installer...' -ForegroundColor Yellow
+    winget install --id Microsoft.DotNet.SDK.8 -e --accept-source-agreements --accept-package-agreements
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host 'Restarting the installer so the new .NET is picked up...' -ForegroundColor Cyan
+        $restartArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -InstallDir `"$InstallDir`" -SourceDir `"$SourceDir`" -DotnetRestarted"
+        Start-Process -FilePath 'powershell.exe' -ArgumentList $restartArgs
+        return
+    }
+    Write-Host 'winget install did not succeed — falling back to the user-local install...' -ForegroundColor Yellow
+}
+
 if (-not $dotnet) {
     Write-Host '.NET 8 SDK not found — installing it user-locally (no admin needed)...' -ForegroundColor Yellow
     $dotnetDir = "$env:LOCALAPPDATA\Microsoft\dotnet"

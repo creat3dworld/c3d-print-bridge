@@ -24,6 +24,10 @@
 # =====================================================================
 
 $ErrorActionPreference = 'Stop'
+# Process scope only: lets this session run the installer FILE even on
+# machines set to Restricted. Gone when this window closes; it changes
+# no permanent setting.
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction SilentlyContinue
 $repo = 'creat3dworld/c3d-print-bridge'
 $installRoot = "$env:USERPROFILE\C3DBridge"
 $sourceDir = "$installRoot\source"
@@ -47,7 +51,9 @@ if (Get-Command gh -ErrorAction SilentlyContinue) {
     Write-Host 'Installing GitHub CLI (needed to fetch the private repo)...' -ForegroundColor Cyan
     try {
         winget install --id GitHub.cli -e --accept-source-agreements --accept-package-agreements | Out-Null
-        $env:PATH = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\GitHub.cli_Microsoft.Winget.Source_8wekyb3d8bbwe\GitHub CLI*\;$env:PATH"
+        # Refresh PATH from the registry so the just-installed gh is
+        # found in THIS session (a literal * in PATH never resolves).
+        $env:PATH = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User') + ';' + $env:PATH
         if (-not (Test-GhAuth)) {
             Write-Host 'Signing into GitHub (a browser code login — follow the prompts)...' -ForegroundColor Cyan
             gh auth login

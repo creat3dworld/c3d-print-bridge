@@ -28,6 +28,18 @@ Copy the whole block below, paste it into PowerShell on the shop PC
 That is the whole install: it fetches the bridge code, builds it,
 registers it to start when you sign in, and runs a self-test.
 
+Short version of the same thing, served from the website:
+
+```
+iex (curl.exe https://creat3dworld.com/bridge|Out-String)
+```
+
+.NET note: if the .NET 8 SDK is not on the PC, the installer
+installs it with winget and then restarts itself in a fresh
+PowerShell window so the new .NET is picked up — no manual
+close/reopen needed. If winget is missing or its install fails,
+the installer falls back to a user-local .NET install instead.
+
 **One honest note first:** the bridge code lives in a PRIVATE
 GitHub repo, so a bare download link cannot work — GitHub requires
 a sign-in for private code. A truly token-free one-liner is
@@ -256,6 +268,7 @@ verified against docs, not yet against the real U1.
 | Job refused_unsafe | The printer was busy, or its loaded filament no longer matched the job. Fix the filament / wait, and the dashboard re-queues. |
 | FTPS upload refused (Bambu) | Known Bambu quirk (data-channel session). Report the exact reason; a retry or a Bambu Studio upload is the fallback. |
 | Token paste fails | The token must be fine-grained, scoped to ONLY this repo, Contents = Read-only. Tokens also expire — create a fresh one. |
+| .NET 8 SDK missing | The installer installs it with winget and restarts itself — just let the new window finish. If winget is missing or fails, it falls back to a user-local install; only if both fail does it ask you to install the SDK by hand from dotnet.microsoft.com/download/dotnet/8.0 and re-run the installer. |
 
 ## Stopping or removing the bridge
 
