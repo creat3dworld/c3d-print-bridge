@@ -58,6 +58,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(selfTestItem);
         menu.Items.Add(updatesItem);
         menu.Items.Add(new ToolStripSeparator());
+        var uninstallItem = new ToolStripMenuItem("Uninstall…");
+        uninstallItem.Click += (_, _) => UninstallApp();
+        menu.Items.Add(uninstallItem);
         menu.Items.Add(exitItem);
         _icon.ContextMenuStrip = menu;
         _icon.DoubleClick += (_, _) => ShowConfigure();
@@ -1739,6 +1742,40 @@ public sealed class TrayApplicationContext : ApplicationContext
             MessageBox.Show($"Get updates failed: {ex.Message}", "C3D Print Bridge",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    private void UninstallApp()
+    {
+        var result = MessageBox.Show(
+            "Uninstall C3D Print Bridge? This removes the Scheduled Task and the install folder.",
+            "C3D Print Bridge", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (result != DialogResult.Yes) return;
+        var parent = Directory.GetParent(Config.AppDir)?.FullName;
+        string? script = null;
+        if (parent is not null)
+        {
+            var candidate = Path.Combine(parent, "Uninstall-C3DBridge.ps1");
+            if (File.Exists(candidate)) script = candidate;
+            else
+            {
+                var sourceCandidate = Path.Combine(parent, "source", "Uninstall-C3DBridge.ps1");
+                if (File.Exists(sourceCandidate)) script = sourceCandidate;
+            }
+        }
+        if (script is null)
+        {
+            MessageBox.Show("Uninstaller not found. Run Uninstall-C3DBridge.ps1 from the bridge repo instead.",
+                "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        // Run a copy from Temp so deleting the install folder cannot
+        // delete the running script itself.
+        var tempScript = Path.Combine(Path.GetTempPath(), "C3DBridge-uninstall.ps1");
+        File.Copy(script, tempScript, true);
+        Process.Start(new ProcessStartInfo("powershell.exe",
+            $"-NoProfile -ExecutionPolicy Bypass -File \"{tempScript}\"")
+        { UseShellExecute = false, CreateNoWindow = false });
+        ExitApp();
     }
 
     private void ExitApp()

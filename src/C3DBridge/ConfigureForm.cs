@@ -227,12 +227,14 @@ public sealed class ConfigureForm : Form
             foreach (var c in candidates)
             {
                 if (_printers.Any(p => string.Equals(p.Ip, c.Ip, StringComparison.OrdinalIgnoreCase))) continue;
-                _printers.Add(new PrinterConfig { Name = "", Type = c.Kind, Ip = c.Ip, Camera = true });
+                var printer = new PrinterConfig { Name = "", Type = c.Kind, Ip = c.Ip, Camera = true };
+                printer = printer with { Name = AutoName(printer) };
+                _printers.Add(printer);
                 added++;
             }
             RefreshList();
             _status.Text = added > 0
-                ? $"Found {candidates.Count} candidate(s); {added} new one(s) added to the list. Fill in each name (and serial + access code for Bambu) and click Apply to list, then Save."
+                ? $"Found {candidates.Count} candidate(s); {added} new one(s) added automatically with a name from their IP. Rename any you like, delete any you do not want, fill in serial + access code for Bambu, then Save."
                 : $"Found {candidates.Count} candidate(s), all already in the list.";
         }
         catch (Exception ex)
@@ -245,6 +247,19 @@ public sealed class ConfigureForm : Form
         }
     }
 
+    // Name a printer from its IP, e.g. U1-233 or Bambu-125.
+    // Appends -2, -3... if that name is already in the list.
+    private string AutoName(PrinterConfig printer)
+    {
+        var last = printer.Ip.Trim().Split('.').LastOrDefault() ?? "printer";
+        var prefix = printer.Type == "snapmaker" ? "U1" : printer.Type == "bambu" ? "Bambu" : printer.Type;
+        var name = $"{prefix}-{last}";
+        var n = 2;
+        while (_printers.Any(p => p != printer && string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)))
+            name = $"{prefix}-{last}-{n++}";
+        return name;
+    }
+
     private void SaveAndClose()
     {
         // Apply any unapplied field edits first, if the fields hold a printer.
@@ -252,14 +267,16 @@ public sealed class ConfigureForm : Form
         {
             if (!ApplyFields()) return;
         }
-        foreach (var p in _printers)
+        // A scanned printer you never set up must not block saving the
+        // ones you did: drop entries with no IP, and auto-name entries
+        // that have an IP but no name, instead of throwing an error.
+        _printers.RemoveAll(p => string.IsNullOrWhiteSpace(p.Ip));
+        for (var i = 0; i < _printers.Count; i++)
         {
-            if (string.IsNullOrWhiteSpace(p.Name) || string.IsNullOrWhiteSpace(p.Ip))
-            {
-                MessageBox.Show("Every printer in the list needs a name and an IP address before saving. Fill them in (or delete the unfinished entry).", "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
+            if (string.IsNullOrWhiteSpace(_printers[i].Name))
+                _printers[i] = _printers[i] with { Name = AutoName(_printers[i]) };
         }
+        RefreshList();
         var incomplete = _printers.Where(p => p.Type == "bambu" &&
             (string.IsNullOrWhiteSpace(p.Serial) || string.IsNullOrWhiteSpace(p.AccessCode))).ToList();
         if (incomplete.Count > 0)

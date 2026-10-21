@@ -10,7 +10,7 @@
 #      the Windows Desktop Runtime the tray icon needs.
 #   2. Stops any running bridge (tray or console) so its exe is
 #      not locked, then builds the bridge from source and
-#      publishes it to $InstallDir\app (framework-dependent,
+#      publishes it to $InstallDir\app (default C:\C3D_Bridge\app, framework-dependent,
 #      win-x64). Updating from v1.0.0 is safe: the existing
 #      bridge-config.json and bridge-key.txt are never touched.
 #   3. Creates bridge-config.json from the example file, if none
@@ -25,7 +25,7 @@
 # "C3DBridge.exe setup" (masked prompt) — never here.
 
 param(
-    [string]$InstallDir = "$env:USERPROFILE\C3DBridge",
+    [string]$InstallDir = "C:\C3D_Bridge",
     [string]$SourceDir = $PSScriptRoot,
     [switch]$DotnetRestarted
 )
@@ -98,15 +98,38 @@ Stop-ScheduledTask -TaskName 'C3D Print Bridge' -ErrorAction SilentlyContinue
 Get-Process C3DBridge -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 Write-Host 'Building the bridge (this takes a minute or two the first time)...'
+# Overwrite an existing install cleanly: keep config/key, clear the old
+# app files (so stale files never linger), publish, then restore.
+$preserveDir = Join-Path $env:TEMP 'C3DBridge-preserve'
+if (Test-Path $appDir) {
+    New-Item -ItemType Directory -Force -Path $preserveDir | Out-Null
+    Copy-Item (Join-Path $appDir 'bridge-config.json') $preserveDir -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path $appDir 'bridge-key.txt') $preserveDir -Force -ErrorAction SilentlyContinue
+    Get-ChildItem $appDir -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
 & $dotnet publish (Join-Path $SourceDir 'src\C3DBridge') -c Release -r win-x64 --self-contained false -o $appDir | Out-Null
+if (Test-Path $preserveDir) {
+    Copy-Item (Join-Path $preserveDir 'bridge-config.json') $appDir -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path $preserveDir 'bridge-key.txt') $appDir -Force -ErrorAction SilentlyContinue
+    Remove-Item $preserveDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 if (-not (Test-Path (Join-Path $appDir 'C3DBridge.exe'))) { throw 'Build failed — C3DBridge.exe was not produced. Read the build output above.' }
 Write-Host 'Build OK.' -ForegroundColor Green
 
 # Reference docs next to the app, for later reading.
 Copy-Item (Join-Path $SourceDir 'SETUP.md') $InstallDir -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $SourceDir 'README.md') $InstallDir -Force -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $SourceDir 'Uninstall-C3DBridge.ps1') $InstallDir -Force -ErrorAction SilentlyContinue
 
 # --- 3. Config (example only — never overwrites a real config) ------
+# Migration to C:\C3D_Bridge: if this install has no config/key yet,
+# pull them from a previous install location instead of starting blank.
+foreach ($oldApp in @("$env:USERPROFILE\C3DBridge\app", "$env:LOCALAPPDATA\C3DBridge\app")) {
+    if ($oldApp -ne $appDir -and (Test-Path $oldApp)) {
+        Copy-Item (Join-Path $oldApp 'bridge-config.json') $appDir -Force -ErrorAction SilentlyContinue
+        Copy-Item (Join-Path $oldApp 'bridge-key.txt') $appDir -Force -ErrorAction SilentlyContinue
+    }
+}
 $configPath = Join-Path $appDir 'bridge-config.json'
 if (-not (Test-Path $configPath)) {
     Copy-Item (Join-Path $SourceDir 'config\bridge-config.example.json') $configPath
