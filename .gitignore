@@ -1,0 +1,17 @@
+# Secrets and local-only files — never committed.
+bridge-config.json
+bridge-key.txt
+*.log
+temp/
+snapshots/
+
+# Build output — regenerable, never committed.
+bin/
+obj/
+publish/
+
+# Editor / OS noise.
+.vs/
+*.user
+.DS_Store
+Thumbs.db
