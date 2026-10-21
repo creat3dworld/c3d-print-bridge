@@ -198,8 +198,11 @@ public static class Updater
             var installer = Path.Combine(sourceDir, "Install-C3DBridge.ps1");
             if (!File.Exists(installer))
             {
-                reason = "The installer was not found in the source folder. Reinstall with the normal install command to update.";
-                return false;
+                // No source folder yet (e.g. installed from a zip, not the
+                // installer): do NOT fail here. The update script below
+                // downloads the public repo zip into the source folder
+                // first, so the installer exists by the time it runs.
+                Program.Log("Update: no installer in the source folder; the update script will download the repo first.");
             }
             var scriptPath = Path.Combine(Path.GetTempPath(), "C3DBridge-update.ps1");
             var script = BuildUpdateScript(parent, sourceDir, installer, appDir, latestVersion);
