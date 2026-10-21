@@ -54,14 +54,25 @@ public static class Updater
     private static string RawUrl =>
         $"https://raw.githubusercontent.com/{RepoOwner}/{RepoName}/{Branch}/src/C3DBridge/Program.cs";
 
+    // Version scheme (Oct 21, 2026): DDMMYYYYHHMM, 24-hour, to the minute
+    // (e.g. 211020261941 = Oct 21, 2026, 19:41). Old dotted versions
+    // (1.1.0 etc.) are still parsed, and any DDMMYYYYHHMM version is
+    // treated as newer than any dotted version.
     private static string? ParseVersion(string programCs)
     {
-        var m = Regex.Match(programCs, @"Version\s*=\s*""(\d+\.\d+\.\d+)""");
+        var m = Regex.Match(programCs, @"Version\s*=\s*""(\d{12})""");
+        if (m.Success) return m.Groups[1].Value;
+        m = Regex.Match(programCs, @"Version\s*=\s*""(\d+\.\d+\.\d+)""");
         return m.Success ? m.Groups[1].Value : null;
     }
 
     private static int CompareVersions(string a, string b)
     {
+        var aStamp = a.Length == 12 && a.All(char.IsDigit);
+        var bStamp = b.Length == 12 && b.All(char.IsDigit);
+        if (aStamp && bStamp) return string.CompareOrdinal(a, b);
+        if (aStamp) return 1;
+        if (bStamp) return -1;
         var pa = a.Split('.').Select(s => int.TryParse(s, out var n) ? n : 0).ToArray();
         var pb = b.Split('.').Select(s => int.TryParse(s, out var n) ? n : 0).ToArray();
         for (var i = 0; i < Math.Max(pa.Length, pb.Length); i++)

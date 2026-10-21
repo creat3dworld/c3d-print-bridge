@@ -144,5 +144,5 @@ if (-not (Test-Path (Join-Path $appDir 'bridge-key.txt'))) {
 }
 Write-Host 'To start the bridge right now (without signing out and back in):'
 Write-Host "  Start-ScheduledTask -TaskName 'C3D Print Bridge'"
-Write-Host '  — or just double-click C3DBridge.exe in the app folder. Either way, v1.1.0 shows as a tray icon by the clock.'
+Write-Host '  — or just double-click C3DBridge.exe in the app folder. Either way, it shows as a tray icon by the clock.'
 Write-Host 'Right-click the tray icon for Configure (printer list, Scan, access codes, dashboard key), Self-test, Get updates, and Exit.'
