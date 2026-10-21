@@ -14,10 +14,13 @@
 //   printer can physically print only one thing at a time.
 // - It never slices, modifies, or inspects model geometry: the
 //   file the dashboard provides is forwarded byte-for-byte.
-// - It keeps no database and serves no UI: state is in-memory
-//   only, plus a plain log file. A restart forgets in-flight jobs
-//   (the printer keeps printing; the dashboard still shows the
-//   job until it is re-reported — see README limits).
+// - It keeps no database: state is in-memory only, plus a plain
+//   log file. A restart forgets in-flight jobs (the printer keeps
+//   printing; the dashboard still shows the job until it is
+//   re-reported — see README limits). The only local UI is the
+//   owner-approved tray icon + Configure window (v1.1.0), which
+//   edits config and checks for updates; it makes no relay
+//   decisions and opens no port.
 // - It never logs secrets: no API keys, no access codes, no full
 //   URLs (file names and job keys only).
 

@@ -60,6 +60,16 @@ public static class Config
         }
     }
 
+    /// <summary>Save a full config (used by the tray Configure
+    /// window). Writes the whole file, so callers must load first
+    /// and keep the fields they are not changing. Never touches
+    /// the separate bridge-key file.</summary>
+    public static void Save(BridgeConfig cfg)
+    {
+        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(cfg, JsonOptions));
+        RestrictFile(ConfigPath);
+    }
+
     /// <summary>Write the example config (placeholders only) if no
     /// real config exists yet. Never overwrites an existing file.</summary>
     public static void WriteExampleIfMissing()

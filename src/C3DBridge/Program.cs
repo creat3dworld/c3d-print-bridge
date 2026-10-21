@@ -1,7 +1,10 @@
 // C3D Print Bridge — entry point.
 //
 // Usage:
-//   C3DBridge                 Run the relay loop (default).
+//   C3DBridge                 Tray icon + relay loop (default on
+//                             Windows; console relay on other OSes).
+//   C3DBridge --configure     Open the tray Configure window
+//                             directly (Windows only).
 //   C3DBridge setup           Store the dashboard bridge API key
 //                             (masked prompt; never echoed, never
 //                             written anywhere but the restricted
@@ -13,7 +16,9 @@
 //                             bridge endpoints, and each printer.
 //   C3DBridge --discover      Probe this PC's own subnet for printer
 //                             candidates (suggestions only; the
-//                             config file is never edited by it).
+//                             config file is never edited by it —
+//                             use Configure + Scan to save found
+//                             printers instead).
 //   C3DBridge --version       Print the version and exit.
 //
 // The bridge never listens on any port and never accepts inbound
@@ -21,13 +26,14 @@
 // the printers on the LAN.
 
 using System.Net;
+using System.Windows.Forms;
 using C3DBridge.Printers;
 
 namespace C3DBridge;
 
 public static class Program
 {
-    public const string Version = "1.0.0";
+    public const string Version = "1.1.0";
 
     private static readonly object LogLock = new();
 
@@ -42,6 +48,7 @@ public static class Program
         }
     }
 
+    [STAThread]
     public static async Task<int> Main(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -50,6 +57,21 @@ public static class Program
         {
             Console.WriteLine($"C3D Print Bridge {Version}");
             return 0;
+        }
+
+        if (args.Contains("--configure") && OperatingSystem.IsWindows())
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            var (loadedCfg, _) = Config.Load();
+            var cfgForForm = loadedCfg ?? new BridgeConfig
+            {
+                DashboardBaseUrl = "https://creat3dworld.com",
+                BridgeName = "shop-pc",
+                Printers = new(),
+            };
+            using var form = new ConfigureForm(cfgForForm, Config.ReadKey() is not null);
+            return form.ShowDialog() == DialogResult.OK ? 0 : 1;
         }
 
         if (args.Contains("--discover"))
@@ -83,6 +105,16 @@ public static class Program
         var (cfg, error) = Config.Load();
         if (cfg is null)
         {
+            // Tray mode still opens: the user can fix the config
+            // from Configure instead of editing JSON by hand. The
+            // tray context itself logs this and keeps running.
+            if (args.Length == 0 && OperatingSystem.IsWindows())
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(new TrayApplicationContext());
+                return 0;
+            }
             Console.WriteLine($"ERROR: {error}");
             Console.WriteLine("Run the installer (see SETUP.md) to create a config file, then edit it with your printers.");
             return 1;
@@ -90,6 +122,14 @@ public static class Program
 
         if (args.Contains("--self-test"))
             return await SelfTestAsync(cfg);
+
+        if (args.Length == 0 && OperatingSystem.IsWindows())
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new TrayApplicationContext());
+            return 0;
+        }
 
         var apiKey = Config.ReadKey();
         using var dashboard = new DashboardClient(cfg.DashboardBaseUrl, cfg.BridgeName, apiKey);

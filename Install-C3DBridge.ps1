@@ -1,4 +1,4 @@
-# C3D Print Bridge — installer for the shop PC (Windows).
+# C3D Print Bridge v1.1.0 — installer for the shop PC (Windows).
 #
 # Run AFTER the code is on the PC (see SETUP.md for the one-paste
 # command that fetches it). This script:
@@ -6,11 +6,16 @@
 #      installs it with winget and restarts this installer in a
 #      fresh PowerShell window so the new .NET is picked up
 #      (no manual close/reopen). Falls back to a user-local
-#      install if winget is missing or fails.
-#   2. Builds the bridge from source and publishes it to
-#      $InstallDir\app (framework-dependent, win-x64).
+#      install if winget is missing or fails. The SDK includes
+#      the Windows Desktop Runtime the tray icon needs.
+#   2. Stops any running bridge (tray or console) so its exe is
+#      not locked, then builds the bridge from source and
+#      publishes it to $InstallDir\app (framework-dependent,
+#      win-x64). Updating from v1.0.0 is safe: the existing
+#      bridge-config.json and bridge-key.txt are never touched.
 #   3. Creates bridge-config.json from the example file, if none
-#      exists yet (you still must edit it with your printers).
+#      exists yet (or open the tray Configure window instead of
+#      editing it by hand).
 #   4. Registers a Scheduled Task that starts the bridge at logon.
 #   5. Runs the bridge self-test and prints the report.
 #
@@ -86,6 +91,12 @@ if (-not $dotnet) {
 # --- 2. Build + publish ----------------------------------------------
 $appDir = Join-Path $InstallDir 'app'
 New-Item -ItemType Directory -Force -Path $appDir | Out-Null
+# Stop a running bridge first (v1.0.0 console or v1.1.0 tray),
+# otherwise Windows locks the exe and publish cannot replace it.
+# Best effort only: a missing task/process is not a failure.
+Stop-ScheduledTask -TaskName 'C3D Print Bridge' -ErrorAction SilentlyContinue
+Get-Process C3DBridge -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
 Write-Host 'Building the bridge (this takes a minute or two the first time)...'
 & $dotnet publish (Join-Path $SourceDir 'src\C3DBridge') -c Release -r win-x64 --self-contained false -o $appDir | Out-Null
 if (-not (Test-Path (Join-Path $appDir 'C3DBridge.exe'))) { throw 'Build failed — C3DBridge.exe was not produced. Read the build output above.' }
@@ -133,4 +144,5 @@ if (-not (Test-Path (Join-Path $appDir 'bridge-key.txt'))) {
 }
 Write-Host 'To start the bridge right now (without signing out and back in):'
 Write-Host "  Start-ScheduledTask -TaskName 'C3D Print Bridge'"
-Write-Host '  — or just double-click C3DBridge.exe in the app folder.'
+Write-Host '  — or just double-click C3DBridge.exe in the app folder. Either way, v1.1.0 shows as a tray icon by the clock.'
+Write-Host 'Right-click the tray icon for Configure (printer list, Scan, access codes, dashboard key), Self-test, Get updates, and Exit.'

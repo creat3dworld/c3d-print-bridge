@@ -134,9 +134,30 @@ if (-not (Test-Path (Join-Path $sourceDir 'Install-C3DBridge.ps1'))) {
 (The same block is saved in the repo as `Bootstrap-Install.ps1`
 for reference. The installer itself is `Install-C3DBridge.ps1`.)
 
-## Step 2 — Tell the bridge about your printers
+## Step 2 — Tell the bridge about your printers (tray Configure window, v1.1.0)
 
-Open this file in Notepad:
+After the install, the bridge shows as a small icon by the
+clock. Right-click it and choose **Configure**. That window is
+the easy way to do this step: a printer list with Add, Edit,
+and Delete, a **Scan** button, and plain fields — no JSON
+editing by hand.
+
+- Click **Scan WiFi for printers**: it probes this PC's own
+  network for Bambu (port 8883) and Snapmaker (port 7125) and
+  adds each candidate it finds to the list with its IP and type
+  filled in. A found port is a candidate, not a confirmed
+  printer, and Scan only sees printers on the same network as
+  the PC.
+- For each printer, fill in a name, and for a Bambu printer the
+  serial and the access code from the printer's own screen
+  (the access-code box hides what you type). Click **Apply to
+  list** for each one, then **Save**. Saving restarts the
+  bridge with the new config. Deleting a printer asks first.
+- The dashboard API key box at the bottom is optional here:
+  leave it blank to keep the key already stored, or paste a new
+  one to replace it (see Step 3).
+
+You can still edit the file by hand instead, if you prefer:
 
 ```
 C:\Users\<you>\C3DBridge\app\bridge-config.json
@@ -165,6 +186,36 @@ config lines (it never edits the file itself):
 ```
 .\C3DBridge.exe --discover
 ```
+
+## Updating the bridge (tray: Get updates, v1.1.0)
+
+Right-click the tray icon and choose **Get updates**. It checks
+the bridge repo for a newer version and reports one of three
+things, plainly: already up to date (with the version), updated
+(with the new version), or failed (with the reason). It never
+claims an update happened without checking the new version
+afterwards.
+
+How the check works: it first tries an unauthenticated check
+against the public repo (no sign-in, no token stored on the
+PC). Only if that returns "not found" — meaning the repo is
+still private — does it fall back to the GitHub CLI sign-in
+already on the PC. If GitHub is not signed in there, it says so
+plainly instead of faking a check: run `gh auth login` once in
+PowerShell, then try Get updates again, or reinstall with the
+normal install command, which handles sign-in for you.
+
+When a newer version is confirmed and you approve, the bridge
+closes so the installer can replace it, then the installer runs,
+your config and key are preserved, the new version is verified
+with `--version`, and the bridge starts again. If the new
+version does not verify, it says so and your old config and key
+are still intact.
+
+Updating from v1.0.0: re-running the same one-command install
+does the same thing (new tray version, config and key kept,
+Scheduled Task re-registered). The v1.0.0 console window is
+replaced by the tray icon at the next sign-in.
 
 ## Step 3 — Connect the bridge to the dashboard (the API key)
 
@@ -269,6 +320,11 @@ verified against docs, not yet against the real U1.
 | FTPS upload refused (Bambu) | Known Bambu quirk (data-channel session). Report the exact reason; a retry or a Bambu Studio upload is the fallback. |
 | Token paste fails | The token must be fine-grained, scoped to ONLY this repo, Contents = Read-only. Tokens also expire — create a fresh one. |
 | .NET 8 SDK missing | The installer installs it with winget and restarts itself — just let the new window finish. If winget is missing or fails, it falls back to a user-local install; only if both fail does it ask you to install the SDK by hand from dotnet.microsoft.com/download/dotnet/8.0 and re-run the installer. |
+
+| Tray icon missing after sign-in | The Scheduled Task may not have started it. Open Task Scheduler → Task Scheduler Library → "C3D Print Bridge" → Run, or double-click C3DBridge.exe in the app folder. The tray icon only shows while you are signed in. |
+| Get updates says sign-in required | The repo still looks private and GitHub is not signed in on this PC. Run `gh auth login` in PowerShell once, then try Get updates again. No token is stored by Get updates. |
+| Get updates failed | The message gives the reason (no network, repo moving, or the new version did not verify). Your config and key are preserved. Try again, or reinstall with the normal install command. |
+| Scan finds nothing | Printers must be on, on the same network as the PC, and in Developer/LAN mode (Bambu) or with Paxx installed (U1). Scan cannot see printers on a different network. |
 
 ## Stopping or removing the bridge
 

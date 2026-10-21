@@ -21,23 +21,22 @@ using System.Net.Sockets;
 
 namespace C3DBridge;
 
+public sealed record Candidate(string Ip, int Port, string Kind);
+
 public static class Discovery
 {
-    public static async Task<List<string>> ProbeSubnetAsync()
+    /// <summary>Probe the PC's own /24 subnet and return raw
+    /// candidates. A reachable port is a CANDIDATE, not a confirmed
+    /// printer. Returns an empty list (never null) when nothing is
+    /// found or no LAN address exists; the caller reports that.</summary>
+    public static async Task<List<Candidate>> ProbeCandidatesAsync()
     {
-        var lines = new List<string>();
+        var found = new List<Candidate>();
         var local = LocalIpv4();
-        if (local is null)
-        {
-            lines.Add("Could not determine this PC's local IPv4 address; discovery needs a LAN address.");
-            return lines;
-        }
+        if (local is null) return found;
 
         var bytes = local.GetAddressBytes();
         var prefix = $"{bytes[0]}.{bytes[1]}.{bytes[2]}.";
-        lines.Add($"Probing {prefix}0/24 (this PC is {local}) — TCP connect to ports 8883 (Bambu) and 7125 (Moonraker), 400 ms timeout each.");
-
-        var found = new List<(string Ip, int Port, string Kind)>();
         var tasks = new List<Task>();
         var gate = new SemaphoreSlim(64);
         for (var host = 1; host <= 254; host++)
@@ -55,7 +54,7 @@ public static class Discovery
                         var connect = tcp.ConnectAsync(ip, port);
                         if (await Task.WhenAny(connect, Task.Delay(400)) == connect && tcp.Connected)
                         {
-                            lock (found) { found.Add((ip, port, kind)); }
+                            lock (found) { found.Add(new Candidate(ip, port, kind)); }
                         }
                     }
                     catch { /* unreachable: not a candidate */ }
@@ -64,6 +63,24 @@ public static class Discovery
             }
         }
         await Task.WhenAll(tasks);
+        return found.OrderBy(f => f.Ip).ThenBy(f => f.Port).ToList();
+    }
+
+    public static async Task<List<string>> ProbeSubnetAsync()
+    {
+        var lines = new List<string>();
+        var local = LocalIpv4();
+        if (local is null)
+        {
+            lines.Add("Could not determine this PC's local IPv4 address; discovery needs a LAN address.");
+            return lines;
+        }
+
+        var bytes = local.GetAddressBytes();
+        var prefix = $"{bytes[0]}.{bytes[1]}.{bytes[2]}.";
+        lines.Add($"Probing {prefix}0/24 (this PC is {local}) — TCP connect to ports 8883 (Bambu) and 7125 (Moonraker), 400 ms timeout each.");
+
+        var found = await ProbeCandidatesAsync();
 
         if (found.Count == 0)
         {
@@ -71,7 +88,7 @@ public static class Discovery
             return lines;
         }
 
-        foreach (var (ip, port, kind) in found.OrderBy(f => f.Ip).ThenBy(f => f.Port))
+        foreach (var (ip, port, kind) in found)
         {
             lines.Add($"Candidate: {ip} port {port} ({kind}). Suggested config line — review before adding:");
             if (kind == "bambu")

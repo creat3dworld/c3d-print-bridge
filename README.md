@@ -37,8 +37,12 @@ opens a listening port and never accepts inbound connections.
 - No printer-picking, no queue ordering, no prioritization, no
   rescheduling. One job per printer, in dashboard poll order,
   because a printer can physically print one thing at a time.
-- No local dashboard, no management UI, no web server, no
-  database. State is in-memory plus a plain log file.
+- No local dashboard, no web server, no database. State is
+  in-memory plus a plain log file. The one local UI exception,
+  owner-approved in v1.1.0, is the Windows tray icon with its
+  Configure window (printer fields, Scan, dashboard key) and
+  Get updates — it edits local config only and makes no relay
+  decisions.
 - No automatic bed-empty vision. Bed-empty cannot be verified from
   printer telemetry; it needs image analysis (heavy dependencies
   this relay refuses). The bridge reports camera availability and
@@ -56,6 +60,11 @@ opens a listening port and never accepts inbound connections.
   verified from public docs). `--discover` probes the PC's own
   subnet with short TCP connects to ports 8883 (Bambu) and 7125
   (Moonraker) and prints suggestions only — it never edits config.
+  The tray Configure window's Scan button uses the same probe
+  and DOES save found printers (IP + type filled in; name and,
+  for Bambu, serial + access code still come from the printer
+  screen). Scan only sees the PC's own subnet, and a reachable
+  port is a candidate, not a confirmed printer.
 - No stored credentials in the repo. See "Security" below.
 
 ## Layout
@@ -66,7 +75,18 @@ Bootstrap-Install.ps1   The one-paste bootstrap (same block as in
                         SETUP.md Step 1).
 SETUP.md                Plain-language setup guide (start here).
 src/C3DBridge/          The bridge (.NET 8 console app).
-  Program.cs            CLI: run / setup / --self-test / --discover.
+  Program.cs            CLI: tray (default) / --configure /
+                        setup / --self-test / --discover.
+  TrayApp.cs            Tray icon: Configure / Self-test /
+                        Get updates / Exit; restarts the relay
+                        loop after a Configure save.
+  ConfigureForm.cs      Configure window: printer list, Scan,
+                        masked access-code + dashboard-key fields.
+  Updater.cs            Get updates: public unauthenticated
+                        version check first, GitHub CLI sign-in
+                        fallback only if the repo is still
+                        private; installer update with version
+                        verification. No token is stored.
   Config.cs             Config load + restricted local key file.
   Models.cs             Protocol payloads (see docs/PROTOCOL.md).
   DashboardClient.cs    Outbound-only HTTPS client + Bearer auth.
@@ -86,7 +106,11 @@ dashboard-addon/        Dashboard-side code for a LATER plugin
 
 ## Dependencies (deliberately few)
 
-- .NET 8 runtime/SDK (free, Microsoft).
+- .NET 8 SDK on Windows (free, Microsoft). The SDK includes
+  the Windows Desktop Runtime the v1.1.0 tray icon needs; the
+  installer already installs the SDK if it is missing. (A
+  runtime-only install needs the Desktop Runtime, not just the
+  base runtime, for the tray window to open.)
 - MQTTnet (Bambu local MQTT client) — the only NuGet package.
   Everything else is base-class-library: HttpClient, JSON, TCP,
   TLS. No web server, no database, no image libraries, no
@@ -99,9 +123,9 @@ dotnet publish src/C3DBridge -c Release -r win-x64 --self-contained false -o ./a
 ```
 
 (The installer does this for you. Mac/Linux: replace `win-x64`
-with `osx-arm64` / `linux-x64`; the code has no Windows-only
-calls except where guarded, and the key file falls back to
-chmod 600 off Windows.)
+with `osx-arm64` / `linux-x64`; on non-Windows the bridge runs
+as a console relay (no tray icon), and the key file falls back
+to chmod 600 off Windows.)
 
 ## Printer protocols (sources)
 
@@ -127,8 +151,11 @@ chmod 600 off Windows.)
   sent as `Authorization: Bearer` on every request. Rotate and
   revoke are dashboard-side; see `docs/PROTOCOL.md`.
 - Printer access codes: `bridge-config.json` on the PC only.
-- Install-time GitHub token (private repo): memory only, one
-  download, then gone. Never in the repo, never in any script.
+- Install-time GitHub token (when the repo was private): memory
+  only, one download, then gone. Never in the repo, never in any
+  script. Get updates stores no token at all: it checks the
+  public repo without sign-in, and only falls back to the GitHub
+  CLI sign-in if the repo is still private.
 - Logs never contain keys, access codes, or full URLs.
 
 ## Status: what is verified vs. what is not
