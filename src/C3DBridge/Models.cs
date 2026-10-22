@@ -20,6 +20,9 @@ public sealed record PrinterConfig
     /// <summary>"bambu" or "snapmaker". Anything else is rejected at config load.</summary>
     [JsonPropertyName("type")] public string Type { get; init; } = "";
     [JsonPropertyName("ip")] public string Ip { get; init; } = "";
+    /// <summary>MAC address, when known, used to follow a DHCP printer
+    /// to a new IP. Never a substitute for serial/access code.</summary>
+    [JsonPropertyName("mac")] public string? Mac { get; init; }
     /// <summary>Optional still-image URL, owner-set from the printer's
     /// own docs (for example a Paxx webcam still endpoint). When
     /// unset, the bridge captures no snapshot and reports none —

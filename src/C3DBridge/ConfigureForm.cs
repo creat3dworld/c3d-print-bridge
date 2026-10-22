@@ -36,6 +36,9 @@ public sealed class ConfigureForm : Form
     private readonly CheckBox _showAccess = new();
     private readonly CheckBox _camera = new();
     private readonly TextBox _key = new();
+    private readonly TextBox _target = new();
+    private readonly Label _portHint = new();
+    private readonly Label _macLabel = new();
     private readonly Label _status = new();
 
     public ConfigureForm(BridgeConfig initial, bool hasKey)
@@ -45,15 +48,15 @@ public sealed class ConfigureForm : Form
 
         Text = "C3D Print Bridge — Configure";
         AutoScaleMode = AutoScaleMode.Dpi;
-        Width = 720;
-        Height = 600;
-        MinimumSize = new Size(680, 560);
+        Width = 780;
+        Height = 740;
+        MinimumSize = new Size(720, 680);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
 
-        var listLabel = new Label { Text = "Printers", Left = 12, Top = 10, Width = 200 };
-        _list.Left = 12; _list.Top = 32; _list.Width = 220; _list.Height = 300; _list.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Bottom;
+        var listLabel = new Label { Text = "Printers", Left = 12, Top = 10, Width = 240 };
+        _list.Left = 12; _list.Top = 36; _list.Width = 240; _list.Height = 320; _list.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Bottom;
         _list.SelectedIndexChanged += (_, _) =>
         {
             if (_list.SelectedIndex >= 0 && _list.SelectedIndex < _printers.Count)
@@ -65,55 +68,65 @@ public sealed class ConfigureForm : Form
         Controls.Add(listLabel);
         Controls.Add(_list);
 
-        var scanBtn = new Button { Text = "Scan WiFi for printers", Left = 12, Top = 342, Width = 220, Height = 32 };
+        var scanBtn = new Button { Text = "Scan WiFi for printers", Left = 12, Top = 366, Width = 240, Height = 32 };
         scanBtn.Click += async (_, _) => await ScanAsync(scanBtn);
         Controls.Add(scanBtn);
 
-        var deleteBtn = new Button { Text = "Delete selected", Left = 12, Top = 382, Width = 220, Height = 32 };
+        var deleteBtn = new Button { Text = "Delete selected", Left = 12, Top = 406, Width = 240, Height = 32 };
         deleteBtn.Click += (_, _) => DeleteSelected();
         Controls.Add(deleteBtn);
 
-        _status.Left = 12; _status.Top = 424; _status.Width = 220; _status.Height = 80;
+        _status.Left = 12; _status.Top = 448; _status.Width = 240; _status.Height = 120;
         _status.Text = "Scan only sees printers on this PC's own network. A found port is a candidate, not a confirmed printer.";
         Controls.Add(_status);
 
-        var x = 252;
-        AddField("Name", _name, x, 32);
-        var typeLabel = new Label { Text = "Type", Left = x, Top = 78, Width = 360 };
-        _type.Left = x; _type.Top = 98; _type.Width = 360; _type.DropDownStyle = ComboBoxStyle.DropDownList;
+        var x = 272;
+        AddField("Name", _name, x, 36);
+        var typeLabel = new Label { Text = "Type", Left = x, Top = 76, Width = 440 };
+        _type.Left = x; _type.Top = 96; _type.Width = 440; _type.DropDownStyle = ComboBoxStyle.DropDownList; _type.DropDownHeight = 80; _type.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _type.Items.Add("bambu"); _type.Items.Add("snapmaker"); _type.SelectedIndex = 0;
         Controls.Add(typeLabel); Controls.Add(_type);
-        AddField("IP address", _ip, x, 138);
-        AddField("Serial (Bambu, from printer screen)", _serial, x, 194);
-        AddField("Access code (Bambu, from printer screen)", _access, x, 250);
+        AddField("IP address", _ip, x, 158);
+        _macLabel.Left = x; _macLabel.Top = 184; _macLabel.Width = 440; _macLabel.Height = 16; _macLabel.ForeColor = System.Drawing.Color.Gray; _macLabel.Text = "MAC: not known yet";
+        Controls.Add(_macLabel);
+        AddField("Serial (Bambu, from printer screen)", _serial, x, 220);
+        AddField("Access code (Bambu / U1 Moonraker key, from printer screen or your saved key)", _access, x, 282);
         _access.UseSystemPasswordChar = true;
-        _showAccess.Text = "Show access code"; _showAccess.Left = x; _showAccess.Top = 296; _showAccess.Width = 200;
+        _showAccess.Text = "Show access code"; _showAccess.Left = x; _showAccess.Top = 318; _showAccess.Width = 200;
         _showAccess.CheckedChanged += (_, _) => _access.UseSystemPasswordChar = !_showAccess.Checked;
         Controls.Add(_showAccess);
-        _camera.Text = "Has camera"; _camera.Left = x; _camera.Top = 322; _camera.Width = 200; _camera.Checked = true;
+        _camera.Text = "Has camera"; _camera.Left = x; _camera.Top = 344; _camera.Width = 200; _camera.Checked = true;
         Controls.Add(_camera);
 
-        var addBtn = new Button { Text = "Add new", Left = x, Top = 352, Width = 120, Height = 32 };
+        var btnHint = new Label { Text = "Add new clears these fields for a new printer. Apply to list saves these fields into the printers list on the left. Neither saves to disk until you click Save below.", Left = x, Top = 372, Width = 440, Height = 28 };
+        Controls.Add(btnHint);
+        var addBtn = new Button { Text = "Add new", Left = x, Top = 404, Width = 140, Height = 32 };
         addBtn.Click += (_, _) => { _editingIndex = -1; _list.ClearSelected(); ClearFields(); _name.Focus(); };
         Controls.Add(addBtn);
-        var applyBtn = new Button { Text = "Apply to list", Left = x + 130, Top = 352, Width = 120, Height = 32 };
+        var applyBtn = new Button { Text = "Apply to list", Left = x + 150, Top = 404, Width = 140, Height = 32 };
         applyBtn.Click += (_, _) => ApplyFields();
         Controls.Add(applyBtn);
 
-        AddField("Dashboard API key (leave blank to keep current)", _key, x, 398);
+        AddField("Dashboard API key (leave blank to keep current)", _key, x, 472);
         _key.UseSystemPasswordChar = true;
         var keyHint = new Label
         {
             Text = hasKey ? "A key is already stored. Only type a new one to replace it."
                 : "No key stored yet. Paste the key from the dashboard Bridge key page.",
-            Left = x, Top = 444, Width = 360, Height = 44,
+            Left = x, Top = 498, Width = 440, Height = 30,
         };
         Controls.Add(keyHint);
 
-        var saveBtn = new Button { Text = "Save", Left = 430, Top = 482, Width = 100, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+        AddField("Dashboard host URL - where the bridge sends status", _target, x, 554);
+        _target.Text = _initial.DashboardBaseUrl;
+        _target.TextChanged += (_, _) => UpdatePortHint();
+        _portHint.Left = x; _portHint.Top = 580; _portHint.Width = 440; _portHint.Height = 28; _portHint.ForeColor = System.Drawing.Color.Gray;
+        Controls.Add(_portHint);
+        UpdatePortHint();
+        var saveBtn = new Button { Text = "Save", Left = 460, Top = 620, Width = 100, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
         saveBtn.Click += (_, _) => SaveAndClose();
         Controls.Add(saveBtn);
-        var cancelBtn = new Button { Text = "Cancel", Left = 540, Top = 482, Width = 100, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+        var cancelBtn = new Button { Text = "Cancel", Left = 570, Top = 620, Width = 100, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
         cancelBtn.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         Controls.Add(cancelBtn);
 
@@ -121,10 +134,23 @@ public sealed class ConfigureForm : Form
         if (_printers.Count > 0) { _list.SelectedIndex = 0; }
     }
 
+    private void UpdatePortHint()
+    {
+        var url = _target.Text.Trim();
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && !uri.IsDefaultPort)
+            _portHint.Text = $"Port: {uri.Port} (from the URL above) - this is where the bridge sends status.";
+        else if (url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            _portHint.Text = "Port: 443 (https default) - this is where the bridge sends status. Change the URL above to point the bridge elsewhere.";
+        else if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            _portHint.Text = "Port: 80 (http default) - this is where the bridge sends status. Change the URL above to point the bridge elsewhere.";
+        else
+            _portHint.Text = "Port: shown here once a valid http(s) URL is entered above.";
+    }
+
     private void AddField(string label, TextBox box, int x, int top)
     {
-        var l = new Label { Text = label, Left = x, Top = top - 20, Width = 360 };
-        box.Left = x; box.Top = top; box.Width = 360;
+        var l = new Label { Text = label, Left = x, Top = top - 20, Width = 440 };
+        box.Left = x; box.Top = top; box.Width = 440; box.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         Controls.Add(l); Controls.Add(box);
     }
 
@@ -148,6 +174,7 @@ public sealed class ConfigureForm : Form
         _serial.Text = p.Serial ?? "";
         _access.Text = p.AccessCode ?? "";
         _camera.Checked = p.Camera;
+        _macLabel.Text = string.IsNullOrWhiteSpace(p.Mac) ? "MAC: not known yet" : $"MAC: {p.Mac}";
     }
 
     private void ClearFields()
@@ -225,19 +252,43 @@ public sealed class ConfigureForm : Form
                 _status.Text = "No printer candidates found. Check the printers are on, on the same network, and in Developer/LAN mode (Bambu) or with Paxx installed (U1).";
                 return;
             }
-            var added = 0;
+            var added = 0; var updated = 0;
             foreach (var c in candidates)
             {
-                if (_printers.Any(p => string.Equals(p.Ip, c.Ip, StringComparison.OrdinalIgnoreCase))) continue;
-                var printer = new PrinterConfig { Name = "", Type = c.Kind, Ip = c.Ip, Camera = true };
-                printer = printer with { Name = AutoName(printer) };
+                var mac = MacResolver.Resolve(c.Ip);
+                if (!string.IsNullOrWhiteSpace(mac))
+                {
+                    var byMac = _printers.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.Mac) && string.Equals(p.Mac, mac, StringComparison.OrdinalIgnoreCase));
+                    if (byMac is not null)
+                    {
+                        if (!string.Equals(byMac.Ip, c.Ip, StringComparison.OrdinalIgnoreCase))
+                        {
+                            var idx = _printers.IndexOf(byMac);
+                            _printers[idx] = byMac with { Ip = c.Ip };
+                            updated++;
+                        }
+                        continue;
+                    }
+                    var byIp = _printers.FirstOrDefault(p => string.Equals(p.Ip, c.Ip, StringComparison.OrdinalIgnoreCase));
+                    if (byIp is not null)
+                    {
+                        var idx2 = _printers.IndexOf(byIp);
+                        _printers[idx2] = byIp with { Mac = mac };
+                        continue;
+                    }
+                }
+                else
+                {
+                    if (_printers.Any(p => string.Equals(p.Ip, c.Ip, StringComparison.OrdinalIgnoreCase))) continue;
+                }
+                var printer = new PrinterConfig { Name = $"Candidate {c.Ip}", Type = c.Kind, Ip = c.Ip, Camera = true, Mac = mac };
                 _printers.Add(printer);
                 added++;
             }
             RefreshList();
-            _status.Text = added > 0
-                ? $"Found {candidates.Count} candidate(s); {added} new one(s) added automatically with a name from their IP. Rename any you like, delete any you do not want, fill in serial + access code for Bambu, then Save."
-                : $"Found {candidates.Count} candidate(s), all already in the list.";
+            _status.Text = added > 0 || updated > 0
+                ? $"Found {candidates.Count} port-open device(s). These are candidates, not confirmed printers. {added} new candidate(s) added, {updated} known printer(s) moved to a new IP by MAC. Select a candidate, fill in serial + access code for Bambu (or Moonraker key for U1), Apply to list, then Save. Delete any that are not printers."
+                : $"Found {candidates.Count} candidate(s), all already in the list. A port being open is not proof it is a printer.";
         }
         catch (Exception ex)
         {
@@ -291,6 +342,7 @@ public sealed class ConfigureForm : Form
         var cfg = _initial with
         {
             Printers = _printers,
+            DashboardBaseUrl = string.IsNullOrWhiteSpace(_target.Text) ? _initial.DashboardBaseUrl : _target.Text.Trim(),
         };
         Config.Save(cfg);
         if (!string.IsNullOrWhiteSpace(_key.Text))
