@@ -18,6 +18,10 @@
 // the printer's own screen; the scan cannot discover them.
 
 using System.Windows.Forms;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
 
 namespace C3DBridge;
 
@@ -102,6 +106,9 @@ public sealed class ConfigureForm : Form
         scanBtn.Click += async (_, _) => await ScanAsync(scanBtn);
         leftPanel.Controls.Add(scanBtn);
         var openBtn = new Button { Text = "Open IP in browser", Left = 0, Top = 394, Width = 220, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        var pullBtn = new Button { Text = "Pull from dashboard", Left = 230, Top = 394, Width = 220, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        pullBtn.Click += async (_, _) => await PullFromDashboardAsync(pullBtn);
+        leftPanel.Controls.Add(pullBtn);
         openBtn.Click += (_, _) => { if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count) { var ip = _printers[_list.SelectedIndices[0]].Ip; if (!string.IsNullOrWhiteSpace(ip)) { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("http://" + ip.Trim()) { UseShellExecute = true }); } catch { } } } };
         leftPanel.Controls.Add(openBtn);
         var deleteBtn = new Button { Text = "Delete selected", Left = 230, Top = 354, Width = 220, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
@@ -393,6 +400,56 @@ public sealed class ConfigureForm : Form
         return name;
     }
 
+
+    private async Task PullFromDashboardAsync(Button btn)
+    {
+        var key = Config.ReadKey();
+        if (string.IsNullOrWhiteSpace(key)) { MessageBox.Show("No dashboard key stored yet. Paste the dashboard key, Save, then Pull.", "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+        var host = string.IsNullOrWhiteSpace(_target.Text) ? _initial.DashboardBaseUrl : _target.Text.Trim();
+        btn.Enabled = false; _status.Text = "Pulling device config from dashboard…";
+        try {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            var res = await http.GetAsync(host.TrimEnd('/') + "/wp-json/c3d-shipping/v1/bridge/device-config");
+            if (!res.IsSuccessStatusCode) { _status.Text = "Pull failed: dashboard returned " + (int)res.StatusCode + ". Nothing changed locally."; return; }
+            var json = await res.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("printers", out var arr) || arr.ValueKind != JsonValueKind.Array) { _status.Text = "No device config stored on the dashboard yet."; return; }
+            var added = 0; var updated = 0;
+            foreach (var el in arr.EnumerateArray()) {
+                string Get(string n) => el.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+                var ip = Get("ip").Trim(); if (string.IsNullOrWhiteSpace(ip)) continue;
+                var pr = new PrinterConfig { Name = string.IsNullOrWhiteSpace(Get("name")) ? ip : Get("name").Trim(), Type = Get("type").Trim().ToLowerInvariant() == "snapmaker" ? "snapmaker" : "bambu", Ip = ip, Serial = string.IsNullOrWhiteSpace(Get("serial")) ? null : Get("serial").Trim(), AccessCode = string.IsNullOrWhiteSpace(Get("accessCode")) ? null : Get("accessCode").Trim(), PaxxUser = string.IsNullOrWhiteSpace(Get("paxxUser")) ? null : Get("paxxUser").Trim(), PaxxPassword = string.IsNullOrWhiteSpace(Get("paxxPassword")) ? null : Get("paxxPassword"), Camera = true, Mac = string.IsNullOrWhiteSpace(Get("mac")) ? null : Get("mac").Trim() };
+                if (el.TryGetProperty("camera", out var cam) && cam.ValueKind == JsonValueKind.False) pr = pr with { Camera = false };
+                var existing = _printers.FindIndex(x => string.Equals(x.Ip, ip, StringComparison.OrdinalIgnoreCase));
+                if (existing >= 0) { _printers[existing] = pr; updated++; } else { _printers.Add(pr); added++; }
+            }
+            RefreshList();
+            _status.Text = $"Pulled from dashboard: {added} new, {updated} updated. Click Save to write this to disk.";
+        } catch (Exception ex) { _status.Text = "Pull failed: " + ex.Message + ". Nothing changed locally."; }
+        finally { btn.Enabled = true; }
+    }
+
+    private void PushToDashboard()
+    {
+        try {
+            var key = Config.ReadKey();
+            if (string.IsNullOrWhiteSpace(key)) return;
+            var host = string.IsNullOrWhiteSpace(_target.Text) ? _initial.DashboardBaseUrl : _target.Text.Trim();
+            if (!host.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return;
+            var list = new List<Dictionary<string, object?>>();
+            foreach (var pr in _printers) {
+                if (string.IsNullOrWhiteSpace(pr.Ip)) continue;
+                list.Add(new Dictionary<string, object?> { ["name"] = pr.Name ?? pr.Ip, ["type"] = pr.Type, ["ip"] = pr.Ip, ["serial"] = pr.Serial ?? "", ["accessCode"] = pr.AccessCode ?? "", ["paxxUser"] = pr.PaxxUser ?? "", ["paxxPassword"] = pr.PaxxPassword ?? "", ["camera"] = pr.Camera, ["mac"] = pr.Mac ?? "" });
+            }
+            var payload = JsonSerializer.Serialize(new { bridge = "shop-pc", printers = list });
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            var res = http.PostAsync(host.TrimEnd('/') + "/wp-json/c3d-shipping/v1/bridge/device-config", new StringContent(payload, Encoding.UTF8, "application/json")).GetAwaiter().GetResult();
+            Program.Log(res.IsSuccessStatusCode ? "Device config pushed to dashboard (encrypted there)." : "Device config push to dashboard failed: " + (int)res.StatusCode + " (local save still succeeded).");
+        } catch (Exception ex) { Program.Log("Device config push to dashboard failed (local save still succeeded): " + ex.Message); }
+    }
+
     private void SaveAndClose()
     {
         // Apply any unapplied field edits first, if the fields hold a printer.
@@ -427,6 +484,7 @@ public sealed class ConfigureForm : Form
         Config.Save(cfg);
         if (!string.IsNullOrWhiteSpace(_key.Text))
             Config.StoreKey(_key.Text);
+        PushToDashboard();
         DialogResult = DialogResult.OK;
         Close();
     }
