@@ -64,6 +64,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $installer -InstallDir $Inst
 $newApp = Join-Path $InstallDir 'app'
 Copy-Item (Join-Path $backup 'bridge-config.json') $newApp -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $backup 'bridge-key.txt') $newApp -Force -ErrorAction SilentlyContinue
+# Shield surviving copies: once restored into the encrypted
+# config/key files, delete the Desktop backup so no extra copy
+# of credentials survives the reinstall.
+if ((Test-Path (Join-Path $newApp 'bridge-config.json')) -or (Test-Path (Join-Path $newApp 'bridge-key.txt'))) { Remove-Item $backup -Recurse -Force -ErrorAction SilentlyContinue }
 Write-Host 'Repair complete: fresh app files, your printers and key restored.' -ForegroundColor Green
 Write-Host "Starting the bridge task..." -ForegroundColor Cyan
 Start-ScheduledTask -TaskName 'C3D Print Bridge' -ErrorAction SilentlyContinue

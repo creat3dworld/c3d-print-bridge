@@ -190,6 +190,11 @@ foreach ($oldApp in @("$env:USERPROFILE\C3DBridge\app", "$env:LOCALAPPDATA\C3DBr
     if ($oldApp -ne $appDir -and (Test-Path $oldApp)) {
         Copy-Item (Join-Path $oldApp 'bridge-config.json') $appDir -Force -ErrorAction SilentlyContinue
         Copy-Item (Join-Path $oldApp 'bridge-key.txt') $appDir -Force -ErrorAction SilentlyContinue
+        # Shield surviving copies: once migrated into the encrypted
+        # config/key files, delete the old location credential files
+        # so no extra plain/old copy survives the reinstall.
+        if (Test-Path (Join-Path $appDir 'bridge-config.json')) { Remove-Item (Join-Path $oldApp 'bridge-config.json') -Force -ErrorAction SilentlyContinue }
+        if (Test-Path (Join-Path $appDir 'bridge-key.txt')) { Remove-Item (Join-Path $oldApp 'bridge-key.txt') -Force -ErrorAction SilentlyContinue }
     }
 }
 $configPath = Join-Path $appDir 'bridge-config.json'
