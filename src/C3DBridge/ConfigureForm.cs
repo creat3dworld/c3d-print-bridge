@@ -152,7 +152,15 @@ public sealed class ConfigureForm : Form
         // size panel with label at Top 0 and field at Top 18
         // cannot collapse, and FlowLayout skips invisible
         // panels, so hidden fields leave no gaps.
-        _flyFlow.Dock = DockStyle.Fill;
+        // Do NOT Dock Fill the flow panel: with Dock Top title +
+        // Dock Fill flow, the first field row ends up UNDER the
+        // title panel — on Bridge settings that hides the
+        // "Dashboard API Key" label under "Bridge settings"
+        // itself, while the URL label below it shows. Position
+        // the flow explicitly below the 36px title panel instead.
+        _flyFlow.Left = 0; _flyFlow.Top = 36; _flyFlow.Width = 360;
+        _flyFlow.Height = Math.Max(100, _flyout.Height - 36);
+        _flyFlow.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         _flyFlow.FlowDirection = FlowDirection.TopDown;
         _flyFlow.WrapContents = false;
         _flyFlow.AutoScroll = false;
@@ -160,6 +168,7 @@ public sealed class ConfigureForm : Form
         _flyFlow.BackColor = System.Drawing.Color.FromArgb(245, 245, 245);
         SetDoubleBuffered(_flyFlow);
         _flyout.Controls.Add(_flyFlow);
+        flyTitlePanel.BringToFront();
         // Field panels: label at Top 0, field at Top 18, all
         // positioned absolutely inside a fixed-size panel.
         void FieldPanel(Panel pn, Label label, Control control) {

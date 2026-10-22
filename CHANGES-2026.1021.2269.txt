@@ -1,0 +1,14 @@
+C3D Print Bridge - version 2026.1021.2269
+Fix for Bridge settings labels, reported on 2268.
+- Root cause: the flyout field panel was Dock Fill under a
+  Dock Top title panel, so the first field row sat UNDER
+  the title. On Bridge settings that hid the "Dashboard
+  API Key" label under the words "Bridge settings" itself,
+  while the "Dashboard host URL" label below it showed.
+- Fix: the field panel is now positioned explicitly below
+  the 36px title panel (Top 36, anchored Top/Bottom/Left/
+  Right), and the title panel is brought to front. The
+  first row — Name on printer flyouts, Dashboard API Key
+  on Bridge settings — can no longer sit under the title.
+- Everything else unchanged from 2268, including the
+  update-check cache-buster.
