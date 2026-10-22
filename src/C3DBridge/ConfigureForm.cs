@@ -64,7 +64,7 @@ public sealed class ConfigureForm : Form
     private Label _apiKeyLabel = new();
     private Label _keyLabel = new();
     private Label _targetLabel = new();
-    private readonly TableLayoutPanel _flyTable = new();
+    private readonly FlowLayoutPanel _flyFlow = new();
     private readonly Panel _namePanel = new();
     private readonly Panel _brandIpPanel = new();
     private readonly Panel _deviceIdPanel = new();
@@ -143,34 +143,33 @@ public sealed class ConfigureForm : Form
         _flyClose.Click += (_, _) => CloseFlyout();
         flyTitlePanel.Controls.Add(_flyClose);
         _flyout.Controls.Add(flyTitlePanel);
-        // Flyout fields live in a TableLayoutPanel, one absolute
-        // 48px row per field. The 2264 FlowLayoutPanel stacked
-        // labels on top of fields (FlowLayout + Dock Fill inside
-        // a flow child collapses the row), so FlowLayout is gone.
-        // TableLayout rows are absolute, so a label at Top 0 and
-        // its field at Top 18 inside a 48px row can never overlap,
-        // and a hidden field's row is set to 0px, so there are
-        // no gaps either.
-        _flyTable.Dock = DockStyle.Fill;
-        _flyTable.ColumnCount = 1;
-        _flyTable.RowCount = 9;
-        _flyTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var r = 0; r < 9; r++) _flyTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        _flyTable.Padding = new Padding(12);
-        _flyTable.BackColor = System.Drawing.Color.FromArgb(245, 245, 245);
-        SetDoubleBuffered(_flyTable);
-        _flyout.Controls.Add(_flyTable);
+        // REVERT to 2264: flyout fields live in a FlowLayoutPanel,
+        // one panel per field, in order. The 2265 TableLayout
+        // experiment is removed. Unlike the original 2264 code,
+        // field panels are given a FIXED size (320x48) instead of
+        // Dock Fill — Dock Fill inside a flow child was the
+        // 2264 collapse that stacked labels on fields. A fixed
+        // size panel with label at Top 0 and field at Top 18
+        // cannot collapse, and FlowLayout skips invisible
+        // panels, so hidden fields leave no gaps.
+        _flyFlow.Dock = DockStyle.Fill;
+        _flyFlow.FlowDirection = FlowDirection.TopDown;
+        _flyFlow.WrapContents = false;
+        _flyFlow.AutoScroll = false;
+        _flyFlow.Padding = new Padding(12);
+        _flyFlow.BackColor = System.Drawing.Color.FromArgb(245, 245, 245);
+        SetDoubleBuffered(_flyFlow);
+        _flyout.Controls.Add(_flyFlow);
         // Field panels: label at Top 0, field at Top 18, all
-        // positioned absolutely inside a Dock Fill panel, so
-        // no Dock/Flow interaction can stack them.
+        // positioned absolutely inside a fixed-size panel.
         void FieldPanel(Panel pn, Label label, Control control) {
-            pn.Dock = DockStyle.Fill; pn.Margin = new Padding(0);
+            pn.Size = new Size(320, 48); pn.Margin = new Padding(0);
             label.Left = 0; label.Top = 0; label.Width = 320; label.Height = 18;
             control.Left = 0; control.Top = 18; control.Width = 320; control.Height = 28;
             pn.Controls.Add(label); pn.Controls.Add(control);
         }
         FieldPanel(_namePanel, _nameLabel, _name);
-        _brandIpPanel.Dock = DockStyle.Fill; _brandIpPanel.Margin = new Padding(0);
+        _brandIpPanel.Size = new Size(320, 48); _brandIpPanel.Margin = new Padding(0);
         var brandPanel = new Panel { Left = 0, Top = 0, Width = 152, Height = 48 };
         _typeLabel.Left = 0; _typeLabel.Top = 0; _typeLabel.Width = 152; _typeLabel.Height = 18;
         _type.Left = 0; _type.Top = 18; _type.Width = 152; _type.Height = 28;
@@ -182,7 +181,7 @@ public sealed class ConfigureForm : Form
         _brandIpPanel.Controls.Add(brandPanel); _brandIpPanel.Controls.Add(ipPanel);
         FieldPanel(_deviceIdPanel, _deviceIdLabel, _deviceId);
         FieldPanel(_loginUserPanel, _loginUserLabel, _loginUser);
-        _loginPassPanel.Dock = DockStyle.Fill; _loginPassPanel.Margin = new Padding(0);
+        _loginPassPanel.Size = new Size(320, 48); _loginPassPanel.Margin = new Padding(0);
         _loginPassLabel.Left = 0; _loginPassLabel.Top = 0; _loginPassLabel.Width = 320; _loginPassLabel.Height = 18;
         var passRow = new Panel { Left = 0, Top = 18, Width = 320, Height = 28 };
         _loginPass.Left = 0; _loginPass.Top = 0; _loginPass.Width = 280; _loginPass.Height = 28;
@@ -192,11 +191,11 @@ public sealed class ConfigureForm : Form
         FieldPanel(_apiKeyPanel, _apiKeyLabel, _apiKeyBox);
         FieldPanel(_keyPanel, _keyLabel, _key);
         FieldPanel(_targetPanel, _targetLabel, _target);
-        _portHintPanel.Dock = DockStyle.Fill; _portHintPanel.Margin = new Padding(0);
+        _portHintPanel.Size = new Size(320, 48); _portHintPanel.Margin = new Padding(0);
         _portHint.Left = 0; _portHint.Top = 0; _portHint.Width = 320; _portHint.Height = 48; _portHint.AutoSize = false; _portHint.ForeColor = System.Drawing.Color.Gray;
         _portHintPanel.Controls.Add(_portHint);
         var flyPanels = new Panel[] { _namePanel, _brandIpPanel, _deviceIdPanel, _loginUserPanel, _loginPassPanel, _apiKeyPanel, _keyPanel, _targetPanel, _portHintPanel };
-        for (var r = 0; r < flyPanels.Length; r++) _flyTable.Controls.Add(flyPanels[r], 0, r);
+        foreach (var pn in flyPanels) _flyFlow.Controls.Add(pn);
 
         // Main list area (fills remaining space, scales with window).
         // No description label above the table: just the table.
@@ -320,8 +319,8 @@ public sealed class ConfigureForm : Form
         // Force a full repaint now, instead of waiting for a move or
         // resize to repaint: this is what makes the ghost go away.
         _flyout.AutoScrollPosition = new System.Drawing.Point(0, 0);
-        _flyTable.Invalidate(true);
-        _flyTable.Update();
+        _flyFlow.Invalidate(true);
+        _flyFlow.Update();
         _flyout.Invalidate(true);
         _flyout.Update();
         Invalidate(true);
@@ -348,8 +347,9 @@ public sealed class ConfigureForm : Form
         return s[..Math.Max(1, maxChars - 1)] + "…";
     }
     private void SetFlyoutRowHeights() {
-        var flyPanels = new Panel[] { _namePanel, _brandIpPanel, _deviceIdPanel, _loginUserPanel, _loginPassPanel, _apiKeyPanel, _keyPanel, _targetPanel, _portHintPanel };
-        for (var r = 0; r < flyPanels.Length && r < _flyTable.RowStyles.Count; r++) _flyTable.RowStyles[r].Height = flyPanels[r].Visible ? 48 : 0;
+        // FlowLayout skips invisible panels on its own, so no
+        // row-height bookkeeping is needed in the 2264 layout.
+        _flyFlow.PerformLayout();
     }
     private void OpenFlyoutPrinter(PrinterConfig? pr) {
         _flyout.SuspendLayout();

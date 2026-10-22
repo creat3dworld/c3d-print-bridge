@@ -159,6 +159,16 @@ if (-not (Test-Path $projectFile)) {
     Write-Host "  $projectFile" -ForegroundColor Yellow
     Write-Host "  (recursive search under $SourceDir found nothing)" -ForegroundColor Yellow
     Write-Host 'Fix: extract ALL files from the version folder / zip, including the src subfolder, and run Setup-Bridge.bat from inside that extracted folder - not from inside the zip, and not from a folder with only the .ps1/.bat files.' -ForegroundColor Yellow
+    # Never leave the user with no app after a failed update:
+    # this check runs AFTER the old app files were cleared, so
+    # restore the preserved app before throwing, instead of
+    # deleting the folder and not reinstalling (the failure
+    # reported on updates to 2043, even without Repair).
+    if (Test-Path $preserveApp) {
+        if (Test-Path $appDir) { Remove-Item $appDir -Recurse -Force -ErrorAction SilentlyContinue }
+        Copy-Item $preserveApp $appDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host 'Previous app restored after failed project check.' -ForegroundColor Yellow
+    }
     throw "Build failed - project file not found. See the fix above."
 }
 $dotnetVersion = $null

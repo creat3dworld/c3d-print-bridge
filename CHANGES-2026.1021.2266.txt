@@ -1,0 +1,21 @@
+C3D Print Bridge - version 2026.1021.2266
+REVERT, per user choice: back to 2264 code on GitHub.
+- Flyout reverted from the 2265 TableLayout experiment back to the
+  2264 FlowLayout layout, one panel per field.
+- One difference from exact 2264: field panels are fixed-size
+  (320x48) instead of Dock Fill. Dock Fill inside a flow child
+  was the 2264 collapse that stacked labels on fields, so exact
+  2264 would stack again. Fixed-size panels cannot collapse,
+  and FlowLayout skips invisible panels, so hidden fields leave
+  no gaps.
+- Version is 2266, not 2264, so tray Get updates actually sees
+  it as newer than 2265 (a literal 2264 would be ignored on
+  PCs already on 2265).
+- Installer fix for the update-deletes-folder failure reported
+  on updates to 2043, even without Repair: if the project-file
+  check after clearing the old app fails, the preserved previous
+  app is restored before throwing, instead of leaving no app.
+- Scan, buttons, auto-save, and dashboard push behaviour are
+  unchanged from 2264/2265. Scan regression (2264/2265 miss one
+  printer that 2043 finds) is still open and is NOT fixed by
+  this revert — it needs the 2043 vs newer Scan comparison.
