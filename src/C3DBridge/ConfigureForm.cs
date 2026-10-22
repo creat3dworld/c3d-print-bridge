@@ -76,9 +76,11 @@ public sealed class ConfigureForm : Form
         MaximizeBox = true;
         StartPosition = FormStartPosition.CenterScreen;
         var wa = Screen.PrimaryScreen?.WorkingArea ?? new System.Drawing.Rectangle(0, 0, 840, 560);
-        Width = Math.Min(680, wa.Width - 20);
-        Height = Math.Min(600, wa.Height - 20);
-        MinimumSize = new Size(600, 500);
+        // Size as a proportion of whatever display this mini-PC is on
+        // right now (laptop or TV) — never hard-coded to one screen's Zoom.
+        Width = Math.Max(600, Math.Min(900, wa.Width * 55 / 100));
+        Height = Math.Max(500, Math.Min(750, wa.Height * 75 / 100));
+        MinimumSize = new Size(560, 460);
         Left = wa.Left + Math.Max(0, (wa.Width - Width) / 2);
         Top = wa.Top + Math.Max(0, (wa.Height - Height) / 2);
 
@@ -182,7 +184,13 @@ public sealed class ConfigureForm : Form
         main.Resize += (_, _) => {
             _list.Width = main.ClientSize.Width - 24;
             _list.Height = Math.Max(120, main.ClientSize.Height - 182);
-            foreach (Control c in main.Controls) { if (c is Button b && b.Top >= 300) { /* buttons stay anchored bottom via Anchor, Top set on first layout below */ } }
+            // Button widths grow/shrink with the window (capped, so a TV
+            // window gets bigger buttons and a laptop window still fits).
+            var bw = Math.Max(110, Math.Min(180, (main.ClientSize.Width - 24 - 24) / 4));
+            scanBtn.Width = bw; deleteBtn.Width = bw; openBtn.Width = bw; pullBtn.Width = bw;
+            deleteBtn.Left = bw + 8; openBtn.Left = 2 * (bw + 8); pullBtn.Left = 3 * (bw + 8);
+            bridgeBtn.Width = bw; confBtn.Width = bw; confBtn.Left = bw + 8;
+            _status.Left = 2 * (bw + 8); _status.Width = Math.Max(120, main.ClientSize.Width - _status.Left - 12);
             scanBtn.Top = main.ClientSize.Height - 112; deleteBtn.Top = scanBtn.Top; openBtn.Top = scanBtn.Top; pullBtn.Top = scanBtn.Top;
             bridgeBtn.Top = main.ClientSize.Height - 72; confBtn.Top = bridgeBtn.Top; _status.Top = bridgeBtn.Top;
         };

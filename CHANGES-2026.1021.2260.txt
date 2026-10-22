@@ -1,0 +1,16 @@
+C3D Print Bridge - version 2026.1021.2260
+Display-size fix (vs 2026.1021.2259):
+- The bridge runs on a small mini-PC that moves between a laptop
+  screen and a TV, so the UI must NOT be tuned to one screen's Zoom.
+- Window now starts as a proportion of the current display's
+  working area (55% wide, 75% tall, capped 900x750, minimum 560x460),
+  instead of a fixed 680x600 tied to one monitor.
+- Main button rows now scale their widths with the window
+  (110-180px each): they fit on a narrow laptop window and grow
+  on a wide TV window, instead of clipping or staying tiny.
+- PerMonitorV2 DPI awareness from 2259 stays: moving the window
+  between monitors re-scales it for that monitor, with no reinstall.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.
