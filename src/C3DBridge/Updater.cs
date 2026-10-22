@@ -260,6 +260,14 @@ if (Test-Path '{sourceDir}\.git') {{
     Remove-Item $zip -Force -ErrorAction SilentlyContinue
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }}
+if (-not (Test-Path '{sourceDir}\src\C3DBridge\C3DBridge.csproj')) {{
+    $foundProj = Get-ChildItem '{sourceDir}' -Recurse -Filter 'C3DBridge.csproj' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $foundProj) {{
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show('Update source is incomplete: project file not found in {sourceDir}. The old bridge was NOT touched. Try Get updates again, or install the prebuilt version instead.', 'C3D Print Bridge')
+        exit 1
+    }}
+}}
 Write-Host 'Running the installer (your config and key are preserved)...'
 if ('{appDir}' -ne 'C:\C3D_Bridge\app') {{ New-Item -ItemType Directory -Force -Path 'C:\C3D_Bridge\app' | Out-Null; Copy-Item '{appDir}\bridge-config.json' 'C:\C3D_Bridge\app' -Force -ErrorAction SilentlyContinue; Copy-Item '{appDir}\bridge-key.txt' 'C:\C3D_Bridge\app' -Force -ErrorAction SilentlyContinue }}
 powershell -NoProfile -ExecutionPolicy Bypass -File '{installer}' -InstallDir 'C:\C3D_Bridge' -SourceDir '{sourceDir}' -FromUpdate

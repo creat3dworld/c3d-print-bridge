@@ -1,4 +1,4 @@
-# C3D Print Bridge v1.1.0 — installer for the shop PC (Windows).
+# C3D Print Bridge v1.1.0 - installer for the shop PC (Windows).
 # If PowerShell says running scripts is disabled, first run:
 #   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
 # (or double-click Enable-Scripts.bat, which does that for you).
@@ -25,7 +25,7 @@
 # This script contains NO secrets and stores NO secrets. Printer
 # access codes go in bridge-config.json (your PC only). The
 # dashboard bridge API key is stored later with
-# "C3DBridge.exe setup" (masked prompt) — never here.
+# "C3DBridge.exe setup" (masked prompt) - never here.
 
 param(
     [string]$InstallDir = "C:\C3D_Bridge",
@@ -80,7 +80,7 @@ foreach ($candidate in $candidates) {
 # -DotnetRestarted flag stops this from looping: after one restart,
 # a still-missing .NET falls through to the user-local install below.
 if (-not $dotnet -and -not $DotnetRestarted -and (Get-Command winget -ErrorAction SilentlyContinue)) {
-    Write-Host '.NET 8 SDK not found — installing it with winget, then restarting this installer...' -ForegroundColor Yellow
+    Write-Host '.NET 8 SDK not found - installing it with winget, then restarting this installer...' -ForegroundColor Yellow
     winget install --id Microsoft.DotNet.SDK.8 -e --accept-source-agreements --accept-package-agreements
     if ($LASTEXITCODE -eq 0) {
         Write-Host 'Restarting the installer so the new .NET is picked up...' -ForegroundColor Cyan
@@ -88,11 +88,11 @@ if (-not $dotnet -and -not $DotnetRestarted -and (Get-Command winget -ErrorActio
         Start-Process -FilePath 'powershell.exe' -ArgumentList $restartArgs
         return
     }
-    Write-Host 'winget install did not succeed — falling back to the user-local install...' -ForegroundColor Yellow
+    Write-Host 'winget install did not succeed - falling back to the user-local install...' -ForegroundColor Yellow
 }
 
 if (-not $dotnet) {
-    Write-Host '.NET 8 SDK not found — installing it user-locally (no admin needed)...' -ForegroundColor Yellow
+    Write-Host '.NET 8 SDK not found - installing it user-locally (no admin needed)...' -ForegroundColor Yellow
     $dotnetDir = "$env:LOCALAPPDATA\Microsoft\dotnet"
     $installer = "$env:TEMP\dotnet-install.ps1"
     Invoke-WebRequest -Uri 'https://dot.net/v1/dotnet-install.ps1' -OutFile $installer -UseBasicParsing
@@ -107,11 +107,11 @@ if (-not $dotnet) {
 $appDir = Join-Path $InstallDir 'app'
 # Project check FIRST, before stopping the old bridge or clearing its
 # files. A failed check here leaves the previous install intact.
-$earlyProject = Join-Path $SourceDir 'src\C3DBridge\C3DBridge.csproj'
-if (-not (Test-Path $earlyProject)) {
-    $earlyFound = Get-ChildItem -Path $SourceDir -Recurse -Filter 'C3DBridge.csproj' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $earlyFound) {
-        throw "Build failed — project file not found under $SourceDir. Extract ALL files (including src) and run Setup-Bridge.bat from inside that extracted folder."
+$projCheck = Join-Path $SourceDir 'src\C3DBridge\C3DBridge.csproj'
+if (-not (Test-Path $projCheck)) {
+    $projFound = Get-ChildItem -Path $SourceDir -Recurse -Filter 'C3DBridge.csproj' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $projFound) {
+        throw "Build failed - project file not found under $SourceDir. Extract ALL files (including src) and run Setup-Bridge.bat from inside that extracted folder."
     }
 }
 New-Item -ItemType Directory -Force -Path $appDir | Out-Null
@@ -147,8 +147,8 @@ if (-not (Test-Path $projectFile)) {
     Write-Host 'Checked:' -ForegroundColor Yellow
     Write-Host "  $projectFile" -ForegroundColor Yellow
     Write-Host "  (recursive search under $SourceDir found nothing)" -ForegroundColor Yellow
-    Write-Host 'Fix: extract ALL files from the version folder / zip, including the src subfolder, and run Setup-Bridge.bat from inside that extracted folder — not from inside the zip, and not from a folder with only the .ps1/.bat files.' -ForegroundColor Yellow
-    throw "Build failed — project file not found. See the fix above."
+    Write-Host 'Fix: extract ALL files from the version folder / zip, including the src subfolder, and run Setup-Bridge.bat from inside that extracted folder - not from inside the zip, and not from a folder with only the .ps1/.bat files.' -ForegroundColor Yellow
+    throw "Build failed - project file not found. See the fix above."
 }
 $dotnetVersion = $null
 try { $dotnetVersion = & $dotnet --version } catch { $dotnetVersion = 'unknown' }
@@ -166,13 +166,13 @@ if (Test-Path $preserveDir) {
 }
 if ($publishExit -ne 0 -or -not (Test-Path (Join-Path $appDir 'C3DBridge.exe'))) {
     if (Test-Path $preserveApp) {
-        Write-Host 'Build failed — restoring the previous app files so you are not left broken.' -ForegroundColor Yellow
+        Write-Host 'Build failed - restoring the previous app files so you are not left broken.' -ForegroundColor Yellow
         if (Test-Path $appDir) { Remove-Item $appDir -Recurse -Force -ErrorAction SilentlyContinue }
         Copy-Item $preserveApp $appDir -Recurse -Force -ErrorAction SilentlyContinue
     }
     Write-Host '--- Last 30 lines of the build log ---' -ForegroundColor Yellow
     if (Test-Path $buildLog) { Get-Content $buildLog -Tail 30 | ForEach-Object { Write-Host $_ } }
-    throw "Build failed (dotnet publish exit $publishExit) — C3DBridge.exe was not produced. Full log: $buildLog"
+    throw "Build failed (dotnet publish exit $publishExit) - C3DBridge.exe was not produced. Full log: $buildLog"
 }
 if (Test-Path $preserveApp) { Remove-Item $preserveApp -Recurse -Force -ErrorAction SilentlyContinue }
 Write-Host 'Build OK.' -ForegroundColor Green
@@ -183,7 +183,7 @@ Copy-Item (Join-Path $SourceDir 'README.md') $InstallDir -Force -ErrorAction Sil
 Copy-Item (Join-Path $SourceDir 'Uninstall-C3DBridge.ps1') $InstallDir -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $SourceDir 'Uninstall-Repair-Reinstall.ps1') $InstallDir -Force -ErrorAction SilentlyContinue
 
-# --- 3. Config (example only — never overwrites a real config) ------
+# --- 3. Config (example only - never overwrites a real config) ------
 # Migration to C:\C3D_Bridge: if this install has no config/key yet,
 # pull them from a previous install location instead of starting blank.
 foreach ($oldApp in @("$env:USERPROFILE\C3DBridge\app", "$env:LOCALAPPDATA\C3DBridge\app")) {
@@ -241,5 +241,5 @@ if ($FromUpdate) {
         Write-Host 'Bridge not started now. It will start at your next sign-in.' -ForegroundColor Yellow
     }
 }
-Write-Host '  — or just double-click C3DBridge.exe in the app folder. Either way, it shows as a tray icon by the clock.'
+Write-Host '  - or just double-click C3DBridge.exe in the app folder. Either way, it shows as a tray icon by the clock.'
 Write-Host 'Right-click the tray icon for Configure (printer list, Scan, access codes, dashboard key), Self-test, Get updates, and Exit.'
