@@ -30,8 +30,15 @@
 //   endpoint, it plugs in here and nowhere else.
 // - Camera: Paxx streams video (RTSP / webcam pages), not stills.
 //   Decoding video would need heavy dependencies this thin relay
-//   avoids, so snapshots come only from an owner-set snapshot_url.
-//   Without one, no snapshot is reported — never a fake image.
+//   avoids. Snapshots come from an owner-set snapshot_url, or
+//   (2275) from auto-discovery: the printer's own Moonraker
+//   webcam list (GET /server/webcams/list) and, only if that
+//   is empty/unavailable, the common Fluidd/Moonraker still
+//   paths /webcam/?action=snapshot and /webcam/snapshot —
+//   authenticated with the printer's existing key/login,
+//   validated as a real JPEG, and saved to the LOCAL config
+//   only. Without an owner-set or discovered URL, no snapshot
+//   is reported — never a fake image.
 // - Any unexpected response (unknown JSON shape, non-2xx) is
 //   reported as offline/error with the reason, never papered over.
 
@@ -47,6 +54,14 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
     private readonly int _port;
     private readonly HttpClient _http;
     private string? _moonrakerToken;
+    // Camera auto-discovery (2275): at most one attempt per
+    // adapter instance. A discovered URL is kept here so this
+    // run can snapshot immediately, and the Worker persists it
+    // to the local config (with SnapshotAutoDiscovered=true).
+    private string? _discoveredSnapshotUrl;
+    private bool _autoDiscoveryAttempted;
+    public string SnapshotSource => _discoveredSnapshotUrl is not null || _cfg.SnapshotAutoDiscovered
+        ? "auto_discovered_moonraker" : "owner_snapshot_url";
     public string Name => _cfg.Name;
     public string Type => _cfg.Type;
     public string Ip => _cfg.Ip;
@@ -224,11 +239,139 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
 
     public async Task<byte[]?> TryGetSnapshotAsync(CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(_cfg.SnapshotUrl)) return null;
+        var url = !string.IsNullOrWhiteSpace(_cfg.SnapshotUrl) ? _cfg.SnapshotUrl : _discoveredSnapshotUrl;
+        if (string.IsNullOrWhiteSpace(url)) return null;
+        return await FetchJpegAsync(url, ct);
+    }
+
+    /// <summary>Camera auto-discovery (2275). Never overwrites
+    /// an owner-set URL (returns null when one is set). Tries,
+    /// in order: Moonraker GET /server/webcams/list — first
+    /// webcam's snapshot_url, resolved against the printer
+    /// base URL — then, only when the list is empty or
+    /// unavailable, /webcam/?action=snapshot and
+    /// /webcam/snapshot. Every candidate is fetched with the
+    /// printer's existing auth and must validate as a JPEG
+    /// (100 bytes – 2 MB, SOI marker) before it is returned.
+    /// Each miss is logged once (this method runs at most
+    /// once per adapter instance); no URL is logged.</summary>
+    public async Task<string?> TryAutoDiscoverSnapshotUrlAsync(CancellationToken ct)
+    {
+        if (_autoDiscoveryAttempted) return null;
+        _autoDiscoveryAttempted = true;
+        if (!string.IsNullOrWhiteSpace(_cfg.SnapshotUrl)) return null;
+        if (!string.IsNullOrWhiteSpace(_discoveredSnapshotUrl)) return _discoveredSnapshotUrl;
+
+        // 1. Moonraker webcam list.
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-            var bytes = await http.GetByteArrayAsync(_cfg.SnapshotUrl, ct);
+            var req = new HttpRequestMessage(HttpMethod.Get, Base + "/server/webcams/list");
+            if (!await AddAuthAsync(req, ct))
+            {
+                Program.Log($"Camera auto-discovery for '{Name}': Moonraker login failed; no snapshot URL discovered.");
+            }
+            else
+            {
+                using var res = await _http.SendAsync(req, ct);
+                if (res.IsSuccessStatusCode)
+                {
+                    using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+                    foreach (var cam in EnumerateWebcams(doc.RootElement))
+                    {
+                        var raw = WebcamSnapshotField(cam);
+                        if (string.IsNullOrWhiteSpace(raw)) continue;
+                        var resolved = ResolveSnapshotUrl(raw);
+                        if (resolved is null) continue;
+                        if (await FetchJpegAsync(resolved, ct) is not null)
+                        {
+                            _discoveredSnapshotUrl = resolved;
+                            Program.Log($"Camera auto-discovery for '{Name}': snapshot URL auto-discovered from the Moonraker webcam list.");
+                            return resolved;
+                        }
+                    }
+                    Program.Log($"Camera auto-discovery for '{Name}': Moonraker webcam list had no usable snapshot URL.");
+                }
+                else
+                {
+                    Program.Log($"Camera auto-discovery for '{Name}': Moonraker webcam list unavailable (HTTP {(int)res.StatusCode}).");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"Camera auto-discovery for '{Name}': Moonraker webcam list failed ({ex.Message}).");
+        }
+
+        // 2. Common Fluidd/Moonraker still paths, only as fallback.
+        foreach (var path in new[] { "/webcam/?action=snapshot", "/webcam/snapshot" })
+        {
+            var url = Base + path;
+            if (await FetchJpegAsync(url, ct) is not null)
+            {
+                _discoveredSnapshotUrl = url;
+                Program.Log($"Camera auto-discovery for '{Name}': snapshot URL auto-discovered from a common Moonraker still path.");
+                return url;
+            }
+            Program.Log($"Camera auto-discovery for '{Name}': fallback still path missed.");
+        }
+
+        Program.Log($"Camera auto-discovery for '{Name}': nothing found; no snapshot will be sent until a snapshot URL is set or discovered.");
+        return null;
+    }
+
+    private static IEnumerable<JsonElement> EnumerateWebcams(JsonElement root)
+    {
+        // Moonraker shapes: {"result":{"webcams":[...]}},
+        // {"result":[...]}, or {"webcams":[...]}.
+        JsonElement list = default;
+        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("result", out var result))
+        {
+            if (result.ValueKind == JsonValueKind.Array) list = result;
+            else if (result.ValueKind == JsonValueKind.Object && result.TryGetProperty("webcams", out var w)) list = w;
+        }
+        else if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("webcams", out var w2)) list = w2;
+        if (list.ValueKind != JsonValueKind.Array) yield break;
+        foreach (var cam in list.EnumerateArray())
+            if (cam.ValueKind == JsonValueKind.Object) yield return cam;
+    }
+
+    private static string? WebcamSnapshotField(JsonElement cam)
+    {
+        foreach (var field in new[] { "snapshot_url", "snapshotUrl", "snapshot" })
+            if (cam.TryGetProperty(field, out var v) && v.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(v.GetString()))
+                return v.GetString();
+        return null;
+    }
+
+    private string? ResolveSnapshotUrl(string raw)
+    {
+        var v = raw.Trim();
+        if (v.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            v.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return v;
+        if (v.StartsWith('/')) return Base + v;
+        return Base + "/" + v;
+    }
+
+    private async Task<byte[]?> FetchJpegAsync(string url, CancellationToken ct)
+    {
+        try
+        {
+            byte[] bytes;
+            if (url.StartsWith(Base, StringComparison.OrdinalIgnoreCase))
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, url);
+                if (!await AddAuthAsync(req, ct)) return null;
+                using var res = await _http.SendAsync(req, ct);
+                if (!res.IsSuccessStatusCode) return null;
+                bytes = await res.Content.ReadAsByteArrayAsync(ct);
+            }
+            else
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                bytes = await http.GetByteArrayAsync(url, ct);
+            }
             if (bytes.Length < 100 || bytes.Length > 2_000_000) return null;
             if (bytes[0] != 0xFF || bytes[1] != 0xD8) return null;
             return bytes;

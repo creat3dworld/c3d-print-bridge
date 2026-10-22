@@ -23,11 +23,22 @@ public sealed record PrinterConfig
     /// <summary>MAC address, when known, used to follow a DHCP printer
     /// to a new IP. Never a substitute for serial/access code.</summary>
     [JsonPropertyName("mac")] public string? Mac { get; init; }
-    /// <summary>Optional still-image URL, owner-set from the printer's
-    /// own docs (for example a Paxx webcam still endpoint). When
-    /// unset, the bridge captures no snapshot and reports none —
-    /// it never guesses a camera URL and never fakes an image.</summary>
+    /// <summary>Still-image URL for Bed View. Owner-set from the
+    /// printer's own docs (for example a Paxx webcam still
+    /// endpoint), or auto-discovered by the bridge (2275) from
+    /// the printer's own authenticated local endpoints and
+    /// saved here in the LOCAL config only. When unset and
+    /// auto-discovery finds nothing, the bridge captures no
+    /// snapshot and reports none — it never fakes an image,
+    /// and auto-discovery never overwrites a URL already set
+    /// here.</summary>
     [JsonPropertyName("snapshot_url")] public string? SnapshotUrl { get; init; }
+    /// <summary>True when SnapshotUrl was filled by bridge
+    /// auto-discovery (2275) rather than set by the owner, so
+    /// the snapshot_source label stays distinct across
+    /// restarts. Never sent to the dashboard on its own — only
+    /// the snapshot JPEG and its source label are sent.</summary>
+    [JsonPropertyName("snapshot_auto_discovered")] public bool SnapshotAutoDiscovered { get; init; }
     /// <summary>Bambu only: printer serial number (for MQTT topics).</summary>
     [JsonPropertyName("serial")] public string? Serial { get; init; }
     /// <summary>Bambu only: LAN access code from the printer's screen.
@@ -142,10 +153,13 @@ public sealed record AmsState
 /// <summary>One bed-view snapshot, captured by the bridge on the
 /// LAN and pushed to the dashboard. The dashboard stores only
 /// the latest snapshot per printer and NEVER auto-passes a bed
-/// check from it — a human must confirm from the image. The
-/// snapshot_source is always "owner_snapshot_url": the bridge
-/// never guesses a camera URL, and a printer with no snapshot
-/// URL set sends no snapshot at all.</summary>
+/// check from it — a human must confirm from the image.
+/// snapshot_source is "owner_snapshot_url" for an owner-set
+/// URL, or a distinct "auto_discovered_*" value for a URL the
+/// bridge auto-discovered (2275) from the printer's own
+/// authenticated local endpoints and validated as a real
+/// JPEG. A printer with no snapshot URL set and nothing
+/// discovered sends no snapshot at all — never a fake image.</summary>
 public sealed record CameraSnapshot
 {
     [JsonPropertyName("printer_name")] public string PrinterName { get; init; } = "";

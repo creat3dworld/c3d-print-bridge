@@ -70,6 +70,14 @@ public sealed class Worker
     public async Task RunAsync(CancellationToken ct)
     {
         Program.Log($"Bridge '{_cfg.BridgeName}' running: {_printers.All.Count} printer(s) configured, dashboard {_cfg.DashboardBaseUrl}.");
+        // Camera auto-discovery (2275): once per Worker startup.
+        // This is also the "when a printer is added" trigger:
+        // Configure saves restart the Worker (TrayApp
+        // RestartWorker), so a newly added printer is discovered
+        // on its first run. It never runs on every status tick,
+        // never overwrites a set URL, and never sends config or
+        // credentials anywhere — see DiscoverCameraUrlsAsync.
+        await DiscoverCameraUrlsAsync(ct);
         if (!_dashboard.HasKey)
             Program.Log("WARNING: no bridge API key stored. Dashboard reporting is disabled until setup stores a key (see SETUP.md). Local printer polling continues.");
 
@@ -361,9 +369,55 @@ public sealed class Worker
         }
     }
 
-    /// <summary>Bed View capture (2274). For each adapter
+    /// <summary>Camera auto-discovery (2275). For each adapter,
+    /// once per Worker startup, ask it for a discovered
+    /// snapshot URL. A returned URL is persisted ONLY to the
+    /// local bridge-config.json on this PC (as that printer's
+    /// snapshot_url, with snapshot_auto_discovered=true), and
+    /// only when the freshly loaded config still has no URL
+    /// for that printer — an owner-set URL is never
+    /// overwritten, including by a race with a Configure save.
+    /// No config, credential, or URL is sent to the dashboard
+    /// or logged: only the snapshot JPEG itself (with its
+    /// source label) goes to the dashboard, as in 2274, and
+    /// only the printer name and source label are logged.
+    /// A discovery miss leaves the URL blank, so no snapshot
+    /// is sent — never a fake image.</summary>
+    private async Task DiscoverCameraUrlsAsync(CancellationToken ct)
+    {
+        foreach (var adapter in _printers.All)
+        {
+            string? url;
+            try { url = await adapter.TryAutoDiscoverSnapshotUrlAsync(ct); }
+            catch { continue; }
+            if (string.IsNullOrWhiteSpace(url)) continue;
+            var (loaded, error) = Config.Load();
+            if (loaded is null)
+            {
+                Program.Log($"Camera auto-discovery for '{adapter.Name}': discovered a snapshot URL but could not reload the local config to save it ({error}). It will be used for this run only.");
+                continue;
+            }
+            var idx = loaded.Printers.FindIndex(p => string.Equals(p.Name, adapter.Name, StringComparison.OrdinalIgnoreCase));
+            if (idx < 0) continue;
+            if (!string.IsNullOrWhiteSpace(loaded.Printers[idx].SnapshotUrl)) continue; // never overwrite a set URL
+            var printers = loaded.Printers.ToList();
+            printers[idx] = printers[idx] with { SnapshotUrl = url, SnapshotAutoDiscovered = true };
+            try
+            {
+                Config.Save(loaded with { Printers = printers });
+                Program.Log($"Camera auto-discovery for '{adapter.Name}': snapshot URL saved to the local bridge config only (source: {adapter.SnapshotSource}).");
+            }
+            catch (Exception ex)
+            {
+                Program.Log($"Camera auto-discovery for '{adapter.Name}': discovered a snapshot URL but could not save it locally ({ex.Message}). It will be used for this run only.");
+            }
+        }
+    }
+
+    /// <summary>Bed View capture (2274, source labels 2275). For each adapter
     /// whose printer is currently idle, at most once a minute,
-    /// try the adapter's owner-set snapshot URL and push the
+    /// try the adapter's snapshot URL (owner-set, or
+    /// auto-discovered in 2275) and push the
     /// JPEG to the dashboard bed-snapshot route. A null return
     /// (no snapshot URL, unreachable URL, non-JPEG, too large)
     /// means no snapshot is sent — never a placeholder. A
@@ -395,7 +449,7 @@ public sealed class Worker
                 PrinterType = adapter.Type,
                 CapturedUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 SnapshotBase64 = Convert.ToBase64String(bytes),
-                SnapshotSource = "owner_snapshot_url",
+                SnapshotSource = adapter.SnapshotSource,
                 CameraAvailable = live.CameraAvailable,
             }, ct);
             if (!ok && status == System.Net.HttpStatusCode.NotFound)

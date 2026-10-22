@@ -1,0 +1,155 @@
+C3D Print Bridge - version 2026.1021.2275
+Camera auto-fill / auto-discovery, for dashboard 0.8.3 Bed View.
+NOT pushed to GitHub in this task. NOT deployed.
+2273 auto-update work is kept intact (default OFF, unchanged)
+and 2274 bed snapshots are kept intact.
+
+THE QUESTION IT ANSWERS
+Bed View (dashboard 0.8.3 live, bridge 2274 pushed) only sent
+a bed snapshot when the owner manually set a snapshot_url in
+bridge config. Marlena asked: now that the bridge code and the
+printer API are already set, can the bridge auto-fill the
+missing camera info itself? For Snapmaker, yes, from the
+printer's own Moonraker API. For Bambu, best-effort only (see
+below). This build runs on the shop PC bridge, on the LAN —
+it was NOT probed from the VM, which cannot reach printer IPs.
+
+WHAT AUTO-DISCOVERY TRIES, PER PRINTER TYPE
+- Snapmaker U1 (Paxx/Moonraker, port 7125, existing auth):
+  1. GET /server/webcams/list, authenticated with the
+     printer's existing auth (X-Api-Key from config.AccessCode,
+     or Paxx login Bearer token via the adapter's existing
+     AddAuthAsync — no credential is invented). Take the first
+     webcam's snapshot_url (also accepting snapshotUrl /
+     snapshot field spellings), resolve a relative URL against
+     http://<ip>:7125, fetch it, and validate it.
+  2. Only if the webcam list is empty/unavailable, try ONLY
+     these common Fluidd/Moonraker still paths, same auth,
+     same validation: /webcam/?action=snapshot and
+     /webcam/snapshot.
+  On success the URL is saved as that printer's snapshot_url
+  in the LOCAL bridge-config.json only (with
+  snapshot_auto_discovered=true), and the snapshot source
+  sent to the dashboard is "auto_discovered_moonraker".
+  Each miss is logged once, with no URL in the log.
+- Bambu P2S/X2D (existing serial + access code), BEST-EFFORT:
+  Tries ONLY GET http://<ip>:6000/recording/JPG/snapshot.jpg
+  (the P1/A1-style HTTP JPEG endpoint documented for other
+  Bambu models, unverified for P2S/X2D). A valid JPEG is
+  saved the same way, with source
+  "auto_discovered_bambu_http". On any miss the URL stays
+  blank and the log says so honestly.
+- Generic/other brands: no auto-discovery is defined, so
+  discovery always returns null and an owner-set URL is
+  never touched.
+
+WHAT HAPPENS WHEN NOTHING IS FOUND
+No URL = no snapshot, exactly as before — never a fake
+image, never a placeholder. For Bambu this is the expected
+outcome on many printers, stated plainly: Bambu's camera is
+normally an RTSP video stream (port 322, needs a
+TTCode/cloud token), and grabbing a frame from it would need
+heavy video dependencies this thin relay deliberately avoids.
+NO ffmpeg/OpenCV/RTSP decoding was added in this build.
+
+RULES, ALL KEPT
+- NEVER overwrites an owner-set snapshot_url (checked in the
+  adapter and again against a freshly loaded config before
+  saving, so a Configure save in between cannot be clobbered).
+- NEVER sends credentials, API keys, or the full local config
+  to the dashboard. Only the snapshot JPEG itself (with its
+  source label) goes to the dashboard, as in 2274, and no URL
+  is written to bridge.log.
+- Runs at most once per Worker startup (once per adapter
+  instance), NOT on every status tick. This is also the
+  "when a printer is added" trigger: Configure saves restart
+  the Worker (TrayApp RestartWorker), so a newly added
+  printer is discovered on its first run.
+- A snapshot still NEVER auto-passes the bed check. That
+  rule is unchanged: only a human confirming from a fresh
+  snapshot (or manually) sets bed_confirmed on the dashboard.
+- JPEG validation, unchanged: 100 bytes – 2 MB, SOI marker
+  (0xFF 0xD8); anything else is discarded, never forwarded.
+
+WHAT CHANGED (files)
+- Program.cs: version only, 2026.1021.2274 -> 2026.1021.2275.
+- Models.cs: SnapshotUrl doc updated (owner-set OR
+  auto-discovered); new PrinterConfig.SnapshotAutoDiscovered
+  flag so the distinct source label survives restarts;
+  CameraSnapshot doc updated (owner_snapshot_url OR
+  auto_discovered_*; no URL = no snapshot).
+- Printers/IPrinterAdapter.cs: new SnapshotSource property
+  and TryAutoDiscoverSnapshotUrlAsync contract; header
+  comment updated (was "never guesses a camera URL").
+- Printers/SnapmakerAdapter.cs: webcam-list + fallback
+  still-path discovery, discovered-URL field, SnapshotSource
+  = auto_discovered_moonraker, header comment updated.
+- Printers/BambuAdapter.cs: port-6000 HTTP JPEG discovery,
+  discovered-URL field, SnapshotSource =
+  auto_discovered_bambu_http, header comment updated with
+  the RTSP limitation.
+- Printers/GenericAdapter.cs: SnapshotSource =
+  owner_snapshot_url; discovery returns null (no brand
+  endpoint defined).
+- Worker.cs: DiscoverCameraUrlsAsync at Worker startup
+  (persist discovered URLs locally only, never-overwrite
+  guard); CaptureBedSnapshotsAsync now sends
+  adapter.SnapshotSource instead of a hardcoded
+  "owner_snapshot_url".
+
+DASHBOARD NOTE (no dashboard change in this build)
+Dashboard 0.8.3's bed-snapshot route accepts any sanitized
+snapshot_source string and displays it in Bed View, so the
+new auto_discovered_* labels need NO dashboard change and
+no dashboard file was edited here. A future dashboard
+change could add a friendlier label for them, but it is not
+required for snapshots to appear.
+
+WHAT WAS NOT CHANGED
+Safety gate (bed vacant -> AMS match -> print starts, hard
+gate); 2273 auto-update option (default OFF); 2274 snapshot
+capture (idle printers only, at most once a minute);
+key handling, device config, printer status logic,
+heartbeat/status formats, FreeConsole tray behaviour,
+manual Get updates. No SimplyPrint code, assets, branding,
+or API. No ffmpeg/OpenCV/RTSP code. No live site, label,
+price, listing, or buyer data touched.
+
+KNOWN LIMITS
+- A dashboard device-config pull (Configure -> Pull) builds
+  fresh PrinterConfig records without snapshot fields, so a
+  pull can drop a locally auto-discovered URL — same
+  pre-existing behaviour as for owner-set URLs, which the
+  pull also does not carry. Re-run discovery on the next
+  Worker restart after a pull.
+- After a restart, a persisted auto-discovered URL keeps
+  its distinct source label via SnapshotAutoDiscovered=true;
+  if that flag is ever lost (e.g. a config pull), the URL
+  is still used but the label reverts to owner_snapshot_url
+  until discovery runs again on a blank URL.
+
+VERIFICATION STILL NEEDED (after push + PC update to 2275)
+1. On the shop PC, update the bridge to 2275 (tray Get
+   updates), then check bridge.log: a Snapmaker with a
+   Moonraker webcam list should log an auto-discovery
+   success and save a snapshot_url locally — with NO
+   credential or URL in the log.
+2. In dashboard Bed View (0.8.3), that Snapmaker should
+   show a REAL bed image without any manual snapshot URL
+   having been set, with source auto_discovered_moonraker,
+   and "Confirm bed vacant from this snapshot" should work
+   only on a fresh (<=10 min) snapshot for an idle printer.
+3. A Bambu may still show "No bed snapshot yet" if port
+   6000 does not serve a JPEG — that is the documented
+   best-effort limit, not a bug to chase with RTSP decoding
+   in this build. If port 6000 DOES serve a JPEG, Bed View
+   should show it with source auto_discovered_bambu_http.
+4. A printer with an owner-set snapshot_url must keep
+   exactly that URL after updating to 2275 (check the local
+   bridge-config.json snapshot_url is unchanged and no
+   auto-discovery log line appears for it).
+5. Start must still refuse before bed+AMS confirmation,
+   even with a fresh auto-discovered snapshot present.
+
+NOT compiled (no dotnet here), brace/paren-balanced only.
+NOT pushed, NOT deployed.

@@ -29,11 +29,18 @@
 //   integrations; the first real print through the bridge must
 //   verify it (see SETUP.md "first-print check"). If the printer
 //   rejects the command, the job fails with the reason.
-// - No still-image endpoint is implemented for Bambu: no verified
-//   lightweight still URL exists on stock firmware, and decoding
-//   the video stream would need heavy dependencies this thin relay
-//   deliberately avoids. Snapshots come only from an owner-set
-//   snapshot_url, if one is configured.
+// - Still images (2275, best-effort): Bambu's camera is
+//   normally an RTSP video stream (port 322, needs a
+//   TTCode/cloud token), and grabbing a frame from it would
+//   need heavy video dependencies this thin relay deliberately
+//   avoids — no ffmpeg/OpenCV/RTSP decoding is added here.
+//   Auto-discovery therefore tries ONLY the P1/A1-style HTTP
+//   JPEG endpoint http://<ip>:6000/recording/JPG/snapshot.jpg
+//   (documented for other Bambu models, unverified for
+//   P2S/X2D). If it returns a valid JPEG it is saved to the
+//   LOCAL config; otherwise the URL stays blank and no
+//   snapshot is sent — never a fake image. Snapshots otherwise
+//   come from an owner-set snapshot_url, if one is configured.
 
 using System.Net.Security;
 using System.Net.Sockets;
@@ -49,6 +56,12 @@ public sealed class BambuAdapter : IPrinterAdapter
 {
     private readonly PrinterConfig _cfg;
     private readonly int _mqttPort;
+    // Camera auto-discovery (2275): at most one attempt per
+    // adapter instance; see TryAutoDiscoverSnapshotUrlAsync.
+    private string? _discoveredSnapshotUrl;
+    private bool _autoDiscoveryAttempted;
+    public string SnapshotSource => _discoveredSnapshotUrl is not null || _cfg.SnapshotAutoDiscovered
+        ? "auto_discovered_bambu_http" : "owner_snapshot_url";
     public string Name => _cfg.Name;
     public string Type => _cfg.Type;
     public string Ip => _cfg.Ip;
@@ -286,11 +299,12 @@ public sealed class BambuAdapter : IPrinterAdapter
 
     public async Task<byte[]?> TryGetSnapshotAsync(CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(_cfg.SnapshotUrl)) return null;
+        var url = !string.IsNullOrWhiteSpace(_cfg.SnapshotUrl) ? _cfg.SnapshotUrl : _discoveredSnapshotUrl;
+        if (string.IsNullOrWhiteSpace(url)) return null;
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-            var bytes = await http.GetByteArrayAsync(_cfg.SnapshotUrl, ct);
+            var bytes = await http.GetByteArrayAsync(url, ct);
             if (bytes.Length < 100 || bytes.Length > 2_000_000) return null;
             // Must look like a JPEG (SOI marker); anything else is not
             // a snapshot and is discarded, never forwarded.
@@ -299,6 +313,46 @@ public sealed class BambuAdapter : IPrinterAdapter
         }
         catch
         {
+            return null;
+        }
+    }
+
+    /// <summary>Camera auto-discovery (2275), best-effort only.
+    /// Never overwrites an owner-set URL. Tries ONLY
+    /// http://&lt;ip&gt;:6000/recording/JPG/snapshot.jpg — the
+    /// P1/A1-style HTTP JPEG endpoint, unverified for P2S/X2D.
+    /// A valid JPEG (100 bytes – 2 MB, SOI marker) is kept for
+    /// this run and returned for the Worker to persist to the
+    /// LOCAL config only. On any miss, the URL stays blank and
+    /// the miss is logged once, honestly: Bambu's camera is
+    /// normally an RTSP video stream (port 322, needs a
+    /// TTCode/cloud token), and frame-grabbing from it would
+    /// need heavy video dependencies this thin relay avoids —
+    /// no ffmpeg/OpenCV/RTSP decoding is added. No URL is
+    /// logged.</summary>
+    public async Task<string?> TryAutoDiscoverSnapshotUrlAsync(CancellationToken ct)
+    {
+        if (_autoDiscoveryAttempted) return null;
+        _autoDiscoveryAttempted = true;
+        if (!string.IsNullOrWhiteSpace(_cfg.SnapshotUrl)) return null;
+        if (!string.IsNullOrWhiteSpace(_discoveredSnapshotUrl)) return _discoveredSnapshotUrl;
+        var url = $"http://{_cfg.Ip}:6000/recording/JPG/snapshot.jpg";
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            var bytes = await http.GetByteArrayAsync(url, ct);
+            if (bytes.Length >= 100 && bytes.Length <= 2_000_000 && bytes[0] == 0xFF && bytes[1] == 0xD8)
+            {
+                _discoveredSnapshotUrl = url;
+                Program.Log($"Camera auto-discovery for '{Name}': snapshot URL auto-discovered from the Bambu HTTP JPEG endpoint.");
+                return url;
+            }
+            Program.Log($"Camera auto-discovery for '{Name}': Bambu HTTP JPEG endpoint did not return a valid JPEG; no snapshot URL discovered. Bambu's camera is normally an RTSP video stream (port 322, needs a TTCode/cloud token) and frame-grabbing from it is not built into this thin relay.");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"Camera auto-discovery for '{Name}': Bambu HTTP JPEG endpoint unreachable ({ex.Message}); no snapshot URL discovered. Bambu's camera is normally an RTSP video stream (port 322, needs a TTCode/cloud token) and frame-grabbing from it is not built into this thin relay.");
             return null;
         }
     }

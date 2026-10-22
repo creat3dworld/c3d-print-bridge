@@ -7,7 +7,9 @@
 //   2. Accept a file the dashboard already sliced, upload it to the
 //      printer, and forward a start command the dashboard ordered.
 //   3. Capture a still snapshot when a still endpoint is configured
-//      and reachable — otherwise report that none is available.
+//      or auto-discovered (2275, brand-local authenticated
+//      endpoints only, JPEG-validated) and reachable —
+//      otherwise report that none is available.
 //
 // Adapters NEVER pick jobs, order queues, slice, or decide anything
 // about the business. Any failure is reported with its reason.
@@ -37,4 +39,24 @@ public interface IPrinterAdapter
     /// bytes. Returns null when no still can be captured — never a
     /// placeholder, never a stock image.</summary>
     Task<byte[]?> TryGetSnapshotAsync(CancellationToken ct);
+
+    /// <summary>Label for the snapshot source sent to the
+    /// dashboard: "owner_snapshot_url", or a distinct
+    /// "auto_discovered_*" value once (2275) auto-discovery
+    /// has validated and saved a camera URL for this printer.</summary>
+    string SnapshotSource { get; }
+
+    /// <summary>Camera auto-discovery (2275). Runs at most once
+    /// per adapter instance (once per Worker startup, which is
+    /// also what happens when a printer is added via Configure,
+    /// since Configure restarts the Worker). Returns the
+    /// discovered snapshot URL, or null when the printer
+    /// already has a URL set, when discovery is not supported
+    /// for this brand, or when nothing valid was found.
+    /// NEVER overwrites an owner-set URL, and NEVER returns a
+    /// URL that did not validate as a real JPEG. The caller
+    /// (Worker) persists a returned URL to the LOCAL bridge
+    /// config only; no config or credential is ever sent to
+    /// the dashboard — only the snapshot JPEG itself.</summary>
+    Task<string?> TryAutoDiscoverSnapshotUrlAsync(CancellationToken ct);
 }

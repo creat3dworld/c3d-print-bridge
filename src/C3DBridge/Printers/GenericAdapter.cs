@@ -22,6 +22,15 @@ public sealed class GenericAdapter : IPrinterAdapter
         => Task.FromResult((false, $"Generic brand '{_cfg.Type}' — upload not supported yet."));
     public Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct)
         => Task.FromResult((false, $"Generic brand '{_cfg.Type}' — start not supported yet."));
+    public string SnapshotSource => "owner_snapshot_url";
+
+    /// <summary>No auto-discovery for generic brands (2275):
+    /// no brand-local camera endpoint is defined for them, so
+    /// discovery always returns null and an owner-set URL is
+    /// never overwritten or replaced.</summary>
+    public Task<string?> TryAutoDiscoverSnapshotUrlAsync(CancellationToken ct)
+        => Task.FromResult<string?>(null);
+
     public async Task<byte[]?> TryGetSnapshotAsync(CancellationToken ct)
     {
         // Same rule as every other adapter: a snapshot only
