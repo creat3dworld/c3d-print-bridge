@@ -33,7 +33,89 @@ namespace C3DBridge;
 
 public static class Program
 {
-    public const string Version = "2026.1021.2052";
+    public const string Version = "2026.1021.2059";
+
+    // Single-instance, newest-wins: only one bridge runs at a time.
+    // A running instance writes its version + pid to a temp file.
+    // A new instance that is NEWER kills the older running process
+    // and takes over; a new instance that is older or the same exits.
+    // Short commands (--version, setup, --self-test, --configure,
+    // --discover) skip this check entirely.
+    private static System.Threading.Mutex? _singleInstanceMutex;
+    private static string RunningFilePath => Path.Combine(Path.GetTempPath(), "C3DBridge-running.json");
+    private static string SortableVersion(string v)
+    {
+        // Current format is YYYY.MMDD.HHMM (dotted, zero-padded).
+        // Anything else (1.1.0, DDMMYYYYHHMM, etc.) is treated as older.
+        var parts = v.Split('.');
+        if (parts.Length == 3 && parts.All(x => x.All(char.IsDigit))) return v;
+        return "0000";
+    }
+    private static bool IsNewer(string current, string running)
+        => string.CompareOrdinal(SortableVersion(current), SortableVersion(running)) > 0;
+    private static bool TryTakeSingleInstance()
+    {
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            var mutex = new System.Threading.Mutex(true, "C3DPrintBridgeSingleInstance", out bool createdNew);
+            if (createdNew)
+            {
+                _singleInstanceMutex = mutex;
+                File.WriteAllText(RunningFilePath, System.Text.Json.JsonSerializer.Serialize(new { version = Version, pid = Environment.ProcessId }));
+                return true;
+            }
+            mutex.Dispose();
+            // Another instance holds the mutex. Read its version/pid.
+            string runningVersion = "";
+            int runningPid = 0;
+            try
+            {
+                var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(RunningFilePath));
+                runningVersion = doc.RootElement.GetProperty("version").GetString() ?? "";
+                runningPid = doc.RootElement.GetProperty("pid").GetInt32();
+            }
+            catch { /* stale/missing file: fall through to pid check below */ }
+            bool alive = false;
+            try { if (runningPid > 0) { var proc = System.Diagnostics.Process.GetProcessById(runningPid); alive = proc.ProcessName.Contains("C3DBridge", StringComparison.OrdinalIgnoreCase); } } catch { alive = false; }
+            if (!alive)
+            {
+                try { File.Delete(RunningFilePath); } catch { }
+                continue; // stale lock, retry acquiring
+            }
+            if (IsNewer(Version, runningVersion))
+            {
+                try
+                {
+                    var old = System.Diagnostics.Process.GetProcessById(runningPid);
+                    old.Kill();
+                    old.WaitForExit(5000);
+                }
+                catch { }
+                try { File.Delete(RunningFilePath); } catch { }
+                continue; // retry acquiring, now as the newest
+            }
+            // Older or same: exit, do not run side by side.
+            if (OperatingSystem.IsWindows())
+                System.Windows.Forms.MessageBox.Show($"C3D Print Bridge {runningVersion} is already running. Only the newest version runs, so this version ({Version}) will exit.", "C3D Print Bridge");
+            else
+                Console.WriteLine($"Bridge {runningVersion} is already running; this version ({Version}) will exit.");
+            return false;
+        }
+        return false;
+    }
+    private static void ReleaseSingleInstance()
+    {
+        try
+        {
+            if (File.Exists(RunningFilePath))
+            {
+                var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(RunningFilePath));
+                if (doc.RootElement.GetProperty("pid").GetInt32() == Environment.ProcessId) File.Delete(RunningFilePath);
+            }
+        }
+        catch { }
+        try { _singleInstanceMutex?.ReleaseMutex(); _singleInstanceMutex?.Dispose(); } catch { }
+    }
 
     private static readonly object LogLock = new();
 
@@ -110,9 +192,11 @@ public static class Program
             // tray context itself logs this and keeps running.
             if (args.Length == 0 && OperatingSystem.IsWindows())
             {
+                if (!TryTakeSingleInstance()) return 0;
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(new TrayApplicationContext());
+                ReleaseSingleInstance();
                 return 0;
             }
             Console.WriteLine($"ERROR: {error}");
@@ -125,9 +209,11 @@ public static class Program
 
         if (args.Length == 0 && OperatingSystem.IsWindows())
         {
+            if (!TryTakeSingleInstance()) return 0;
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new TrayApplicationContext());
+            ReleaseSingleInstance();
             return 0;
         }
 

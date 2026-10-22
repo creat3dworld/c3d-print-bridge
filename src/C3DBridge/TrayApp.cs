@@ -1765,11 +1765,16 @@ public sealed class TrayApplicationContext : ApplicationContext
             {
                 var sourceCandidate = Path.Combine(parent, "source", scriptName);
                 if (File.Exists(sourceCandidate)) script = sourceCandidate;
+                else
+                {
+                    var appCandidate = Path.Combine(Config.AppDir, scriptName);
+                    if (File.Exists(appCandidate)) script = appCandidate;
+                }
             }
         }
         if (script is null)
         {
-            MessageBox.Show("Uninstaller not found. Run the uninstaller script from the bridge repo instead.",
+            MessageBox.Show($"Uninstaller not found in {parent}. Copy {scriptName} from the version folder into {parent}, then try again.",
                 "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }

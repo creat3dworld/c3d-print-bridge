@@ -35,6 +35,8 @@ $installer = Join-Path $SourceDir 'Install-C3DBridge.ps1'
 if (-not (Test-Path $installer)) {
     $alt = Join-Path $InstallDir 'source\Install-C3DBridge.ps1'
     if (Test-Path $alt) { $installer = $alt; $SourceDir = Join-Path $InstallDir 'source' }
+    $altRoot = Join-Path $InstallDir 'Install-C3DBridge.ps1'
+    if (-not (Test-Path $installer) -and (Test-Path $altRoot)) { $installer = $altRoot; $SourceDir = $InstallDir }
 }
 if (-not (Test-Path $installer)) {
     throw "Installer not found. Run this script from the bridge source folder (where Install-C3DBridge.ps1 lives)."

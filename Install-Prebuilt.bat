@@ -12,4 +12,7 @@ choice /C YN /M "Start bridge now"
 if errorlevel 2 goto done
 schtasks /run /tn "C3D Print Bridge"
 :done
+copy /Y "%~dp0Uninstall-C3DBridge.ps1" "C:\C3D_Bridge\" >nul
+copy /Y "%~dp0Uninstall-Repair-Reinstall.ps1" "C:\C3D_Bridge\" >nul
+copy /Y "%~dp0Install-C3DBridge.ps1" "C:\C3D_Bridge\" >nul
 pause
