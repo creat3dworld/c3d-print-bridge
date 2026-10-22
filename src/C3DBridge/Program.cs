@@ -33,7 +33,7 @@ namespace C3DBridge;
 
 public static class Program
 {
-    public const string Version = "2026.1021.2024";
+    public const string Version = "2026.1021.2052";
 
     private static readonly object LogLock = new();
 

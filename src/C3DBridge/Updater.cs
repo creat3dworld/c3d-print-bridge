@@ -262,7 +262,7 @@ if (Test-Path '{sourceDir}\.git') {{
 }}
 Write-Host 'Running the installer (your config and key are preserved)...'
 if ('{appDir}' -ne 'C:\C3D_Bridge\app') {{ New-Item -ItemType Directory -Force -Path 'C:\C3D_Bridge\app' | Out-Null; Copy-Item '{appDir}\bridge-config.json' 'C:\C3D_Bridge\app' -Force -ErrorAction SilentlyContinue; Copy-Item '{appDir}\bridge-key.txt' 'C:\C3D_Bridge\app' -Force -ErrorAction SilentlyContinue }}
-powershell -NoProfile -ExecutionPolicy Bypass -File '{installer}' -InstallDir 'C:\C3D_Bridge' -SourceDir '{sourceDir}'
+powershell -NoProfile -ExecutionPolicy Bypass -File '{installer}' -InstallDir 'C:\C3D_Bridge' -SourceDir '{sourceDir}' -FromUpdate
 $ver = & 'C:\C3D_Bridge\app\C3DBridge.exe' --version 2>$null
 Add-Type -AssemblyName System.Windows.Forms
 if ($ver -match '{Regex.Escape(latestVersion)}') {{

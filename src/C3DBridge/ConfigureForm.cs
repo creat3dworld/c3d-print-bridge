@@ -44,14 +44,16 @@ public sealed class ConfigureForm : Form
         _printers = initial.Printers.ToList();
 
         Text = "C3D Print Bridge — Configure";
-        Width = 680;
-        Height = 560;
+        AutoScaleMode = AutoScaleMode.Dpi;
+        Width = 720;
+        Height = 600;
+        MinimumSize = new Size(680, 560);
         StartPosition = FormStartPosition.CenterScreen;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MaximizeBox = true;
 
         var listLabel = new Label { Text = "Printers", Left = 12, Top = 10, Width = 200 };
-        _list.Left = 12; _list.Top = 32; _list.Width = 220; _list.Height = 300;
+        _list.Left = 12; _list.Top = 32; _list.Width = 220; _list.Height = 300; _list.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Bottom;
         _list.SelectedIndexChanged += (_, _) =>
         {
             if (_list.SelectedIndex >= 0 && _list.SelectedIndex < _printers.Count)
@@ -71,14 +73,14 @@ public sealed class ConfigureForm : Form
         deleteBtn.Click += (_, _) => DeleteSelected();
         Controls.Add(deleteBtn);
 
-        _status.Left = 12; _status.Top = 424; _status.Width = 220; _status.Height = 60;
+        _status.Left = 12; _status.Top = 424; _status.Width = 220; _status.Height = 80;
         _status.Text = "Scan only sees printers on this PC's own network. A found port is a candidate, not a confirmed printer.";
         Controls.Add(_status);
 
         var x = 252;
         AddField("Name", _name, x, 32);
-        var typeLabel = new Label { Text = "Type", Left = x, Top = 78, Width = 380 };
-        _type.Left = x; _type.Top = 98; _type.Width = 380; _type.DropDownStyle = ComboBoxStyle.DropDownList;
+        var typeLabel = new Label { Text = "Type", Left = x, Top = 78, Width = 360 };
+        _type.Left = x; _type.Top = 98; _type.Width = 360; _type.DropDownStyle = ComboBoxStyle.DropDownList;
         _type.Items.Add("bambu"); _type.Items.Add("snapmaker"); _type.SelectedIndex = 0;
         Controls.Add(typeLabel); Controls.Add(_type);
         AddField("IP address", _ip, x, 138);
@@ -104,14 +106,14 @@ public sealed class ConfigureForm : Form
         {
             Text = hasKey ? "A key is already stored. Only type a new one to replace it."
                 : "No key stored yet. Paste the key from the dashboard Bridge key page.",
-            Left = x, Top = 444, Width = 380, Height = 30,
+            Left = x, Top = 444, Width = 360, Height = 44,
         };
         Controls.Add(keyHint);
 
-        var saveBtn = new Button { Text = "Save", Left = 430, Top = 482, Width = 100, Height = 32 };
+        var saveBtn = new Button { Text = "Save", Left = 430, Top = 482, Width = 100, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
         saveBtn.Click += (_, _) => SaveAndClose();
         Controls.Add(saveBtn);
-        var cancelBtn = new Button { Text = "Cancel", Left = 540, Top = 482, Width = 100, Height = 32 };
+        var cancelBtn = new Button { Text = "Cancel", Left = 540, Top = 482, Width = 100, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
         cancelBtn.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         Controls.Add(cancelBtn);
 
@@ -121,8 +123,8 @@ public sealed class ConfigureForm : Form
 
     private void AddField(string label, TextBox box, int x, int top)
     {
-        var l = new Label { Text = label, Left = x, Top = top - 20, Width = 380 };
-        box.Left = x; box.Top = top; box.Width = 380;
+        var l = new Label { Text = label, Left = x, Top = top - 20, Width = 360 };
+        box.Left = x; box.Top = top; box.Width = 360;
         Controls.Add(l); Controls.Add(box);
     }
 

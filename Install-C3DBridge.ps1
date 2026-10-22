@@ -30,7 +30,8 @@
 param(
     [string]$InstallDir = "C:\C3D_Bridge",
     [string]$SourceDir = $PSScriptRoot,
-    [switch]$DotnetRestarted
+    [switch]$DotnetRestarted,
+    [switch]$FromUpdate
 )
 
 # Self-elevate: installing to C:\C3D_Bridge and registering the logon
@@ -39,6 +40,7 @@ param(
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $elevArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -InstallDir `"$InstallDir`" -SourceDir `"$SourceDir`""
     if ($DotnetRestarted) { $elevArgs += " -DotnetRestarted" }
+    if ($FromUpdate) { $elevArgs += " -FromUpdate" }
     Start-Process powershell.exe -Verb RunAs -ArgumentList $elevArgs
     exit
 }
@@ -103,6 +105,15 @@ if (-not $dotnet) {
 
 # --- 2. Build + publish ----------------------------------------------
 $appDir = Join-Path $InstallDir 'app'
+# Project check FIRST, before stopping the old bridge or clearing its
+# files. A failed check here leaves the previous install intact.
+$earlyProject = Join-Path $SourceDir 'src\C3DBridge\C3DBridge.csproj'
+if (-not (Test-Path $earlyProject)) {
+    $earlyFound = Get-ChildItem -Path $SourceDir -Recurse -Filter 'C3DBridge.csproj' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $earlyFound) {
+        throw "Build failed — project file not found under $SourceDir. Extract ALL files (including src) and run Setup-Bridge.bat from inside that extracted folder."
+    }
+}
 New-Item -ItemType Directory -Force -Path $appDir | Out-Null
 # Stop a running bridge first (v1.0.0 console or v1.1.0 tray),
 # otherwise Windows locks the exe and publish cannot replace it.
@@ -114,19 +125,56 @@ Write-Host 'Building the bridge (this takes a minute or two the first time)...'
 # Overwrite an existing install cleanly: keep config/key, clear the old
 # app files (so stale files never linger), publish, then restore.
 $preserveDir = Join-Path $env:TEMP 'C3DBridge-preserve'
+$preserveApp = Join-Path $env:TEMP 'C3DBridge-preserve-app'
 if (Test-Path $appDir) {
+    if (Test-Path $preserveApp) { Remove-Item $preserveApp -Recurse -Force -ErrorAction SilentlyContinue }
+    Copy-Item $appDir $preserveApp -Recurse -Force -ErrorAction SilentlyContinue
+
     New-Item -ItemType Directory -Force -Path $preserveDir | Out-Null
     Copy-Item (Join-Path $appDir 'bridge-config.json') $preserveDir -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $appDir 'bridge-key.txt') $preserveDir -Force -ErrorAction SilentlyContinue
     Get-ChildItem $appDir -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
-& $dotnet publish (Join-Path $SourceDir 'src\C3DBridge') -c Release -r win-x64 --self-contained false -o $appDir | Out-Null
+$projectPath = Join-Path $SourceDir 'src\C3DBridge'
+$projectFile = Join-Path $projectPath 'C3DBridge.csproj'
+if (-not (Test-Path $projectFile)) {
+    # Fallback: the user may have extracted the zip into a nested folder,
+    # or Drive may have synced src at a different depth. Search for it.
+    $found = Get-ChildItem -Path $SourceDir -Recurse -Filter 'C3DBridge.csproj' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found) { $projectPath = $found.Directory.FullName; $projectFile = $found.FullName; Write-Host "Found project at: $projectFile" -ForegroundColor Green }
+}
+if (-not (Test-Path $projectFile)) {
+    Write-Host 'Checked:' -ForegroundColor Yellow
+    Write-Host "  $projectFile" -ForegroundColor Yellow
+    Write-Host "  (recursive search under $SourceDir found nothing)" -ForegroundColor Yellow
+    Write-Host 'Fix: extract ALL files from the version folder / zip, including the src subfolder, and run Setup-Bridge.bat from inside that extracted folder — not from inside the zip, and not from a folder with only the .ps1/.bat files.' -ForegroundColor Yellow
+    throw "Build failed — project file not found. See the fix above."
+}
+$dotnetVersion = $null
+try { $dotnetVersion = & $dotnet --version } catch { $dotnetVersion = 'unknown' }
+Write-Host "Using .NET: $dotnetVersion"
+Write-Host "Project: $projectFile"
+$buildLog = Join-Path $env:TEMP 'C3DBridge-build.log'
+Write-Host "Build log: $buildLog"
+& $dotnet publish $projectPath -c Release -r win-x64 --self-contained false -o $appDir > $buildLog 2>&1
+if (Test-Path $buildLog) { Get-Content $buildLog | ForEach-Object { Write-Host $_ } }
+$publishExit = $LASTEXITCODE
 if (Test-Path $preserveDir) {
     Copy-Item (Join-Path $preserveDir 'bridge-config.json') $appDir -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $preserveDir 'bridge-key.txt') $appDir -Force -ErrorAction SilentlyContinue
     Remove-Item $preserveDir -Recurse -Force -ErrorAction SilentlyContinue
 }
-if (-not (Test-Path (Join-Path $appDir 'C3DBridge.exe'))) { throw 'Build failed — C3DBridge.exe was not produced. Read the build output above.' }
+if ($publishExit -ne 0 -or -not (Test-Path (Join-Path $appDir 'C3DBridge.exe'))) {
+    if (Test-Path $preserveApp) {
+        Write-Host 'Build failed — restoring the previous app files so you are not left broken.' -ForegroundColor Yellow
+        if (Test-Path $appDir) { Remove-Item $appDir -Recurse -Force -ErrorAction SilentlyContinue }
+        Copy-Item $preserveApp $appDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host '--- Last 30 lines of the build log ---' -ForegroundColor Yellow
+    if (Test-Path $buildLog) { Get-Content $buildLog -Tail 30 | ForEach-Object { Write-Host $_ } }
+    throw "Build failed (dotnet publish exit $publishExit) — C3DBridge.exe was not produced. Full log: $buildLog"
+}
+if (Test-Path $preserveApp) { Remove-Item $preserveApp -Recurse -Force -ErrorAction SilentlyContinue }
 Write-Host 'Build OK.' -ForegroundColor Green
 
 # Reference docs next to the app, for later reading.
@@ -179,7 +227,19 @@ if (-not (Test-Path (Join-Path $appDir 'bridge-key.txt'))) {
     Write-Host "  $appDir\C3DBridge.exe setup" -ForegroundColor Yellow
     Write-Host 'and paste the key when asked (input is hidden). Until then the bridge reports local printer status only.'
 }
-Write-Host 'To start the bridge right now (without signing out and back in):'
-Write-Host "  Start-ScheduledTask -TaskName 'C3D Print Bridge'"
+# Start after install: a git update was already checked for on purpose,
+# so it starts without asking. A fresh install asks first (safety check).
+if ($FromUpdate) {
+    Start-ScheduledTask -TaskName 'C3D Print Bridge' -ErrorAction SilentlyContinue
+    Write-Host 'Bridge started (update install, no prompt needed).' -ForegroundColor Green
+} else {
+    $startAnswer = Read-Host 'Start the bridge now? [Y/n]'
+    if ($startAnswer -eq '' -or $startAnswer -match '^[Yy]') {
+        Start-ScheduledTask -TaskName 'C3D Print Bridge' -ErrorAction SilentlyContinue
+        Write-Host 'Bridge started.' -ForegroundColor Green
+    } else {
+        Write-Host 'Bridge not started now. It will start at your next sign-in.' -ForegroundColor Yellow
+    }
+}
 Write-Host '  — or just double-click C3DBridge.exe in the app folder. Either way, it shows as a tray icon by the clock.'
 Write-Host 'Right-click the tray icon for Configure (printer list, Scan, access codes, dashboard key), Self-test, Get updates, and Exit.'
