@@ -82,6 +82,13 @@ public sealed class ConfigureForm : Form
         _list.Columns.Add("Status", 110);
         _list.Left = 0; _list.Top = 24; _list.Width = 456; _list.Height = 320;
         _list.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Bottom | AnchorStyles.Right;
+        _list.MouseDoubleClick += (_, e) => {
+            var hit = _list.HitTest(e.Location);
+            if (hit.Item != null && hit.Item.Index < _printers.Count) {
+                var ip = _printers[hit.Item.Index].Ip;
+                if (!string.IsNullOrWhiteSpace(ip)) { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("http://" + ip.Trim()) { UseShellExecute = true }); } catch { } }
+            }
+        };
         _list.SelectedIndexChanged += (_, _) =>
         {
             if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count)
@@ -94,10 +101,13 @@ public sealed class ConfigureForm : Form
         var scanBtn = new Button { Text = "Scan WiFi for printers", Left = 0, Top = 354, Width = 220, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
         scanBtn.Click += async (_, _) => await ScanAsync(scanBtn);
         leftPanel.Controls.Add(scanBtn);
+        var openBtn = new Button { Text = "Open IP in browser", Left = 0, Top = 394, Width = 220, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        openBtn.Click += (_, _) => { if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count) { var ip = _printers[_list.SelectedIndices[0]].Ip; if (!string.IsNullOrWhiteSpace(ip)) { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("http://" + ip.Trim()) { UseShellExecute = true }); } catch { } } } };
+        leftPanel.Controls.Add(openBtn);
         var deleteBtn = new Button { Text = "Delete selected", Left = 230, Top = 354, Width = 220, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
         deleteBtn.Click += (_, _) => DeleteSelected();
         leftPanel.Controls.Add(deleteBtn);
-        _status.Left = 0; _status.Top = 394; _status.Width = 456; _status.Height = 100; _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        _status.Left = 0; _status.Top = 434; _status.Width = 456; _status.Height = 60; _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         _status.Text = "Scan only sees printers on this PC's own network. A found port is a candidate, not a confirmed printer.";
         leftPanel.Controls.Add(_status);
         Controls.Add(leftPanel);
@@ -115,24 +125,26 @@ public sealed class ConfigureForm : Form
         var saveHint = new Label { Text = "Save writes everything to disk. Click the logo to visit creat3dworld.com.", Left = 48, Top = 16, Width = 300 };
         bottomPanel.Controls.Add(saveHint);
         var saveBtn = new Button { Text = "Save", Width = 100, Height = 32, Anchor = AnchorStyles.Top | AnchorStyles.Right, BackColor = System.Drawing.Color.FromArgb(0, 120, 215), ForeColor = System.Drawing.Color.White, FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false };
-        saveBtn.Left = bottomPanel.Width - 230; saveBtn.Top = 12;
+        saveBtn.Left = Width - 230; saveBtn.Top = 12;
         saveBtn.Click += (_, _) => SaveAndClose();
         bottomPanel.Controls.Add(saveBtn);
         var cancelBtn = new Button { Text = "Cancel", Width = 100, Height = 32, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-        cancelBtn.Left = bottomPanel.Width - 120; cancelBtn.Top = 12;
+        cancelBtn.Left = Width - 120; cancelBtn.Top = 12;
         cancelBtn.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         bottomPanel.Controls.Add(cancelBtn);
         // Keep Save/Cancel at the right edge when the form resizes
         bottomPanel.Resize += (_, _) => { saveBtn.Left = bottomPanel.Width - 230; cancelBtn.Left = bottomPanel.Width - 120; };
         Controls.Add(bottomPanel);
 
-        // Right panel: scrollable fields, so a short form still reaches every field
-        _rightPanel.Dock = DockStyle.Fill;
+        // Right panel: explicit bounds, NOT Dock Fill. Dock Fill + BringToFront
+        // put this panel's fields (at x=12) underneath the 480px left panel,
+        // which is why the right side looked gray with no controls.
+        _rightPanel.Left = 492; _rightPanel.Top = 6;
+        _rightPanel.Width = Width - 504; _rightPanel.Height = Height - 62;
+        _rightPanel.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         _rightPanel.AutoScroll = true;
         _rightPanel.Padding = new Padding(12);
         Controls.Add(_rightPanel);
-        // Bring left/bottom panels to front in dock order
-        leftPanel.BringToFront(); bottomPanel.BringToFront();
 
         var x = 12;
         AddField("Name", _name, x, 36);
@@ -178,6 +190,12 @@ public sealed class ConfigureForm : Form
         _rightPanel.Controls.Add(_portHint);
         UpdatePortHint();
 
+        // Migrate old "Candidate-..." names: name becomes the IP itself.
+        // Type + IP columns already identify the printer, so no invented name.
+        for (var i = 0; i < _printers.Count; i++) {
+            if ((string.IsNullOrWhiteSpace(_printers[i].Name) || _printers[i].Name.StartsWith("Candidate", StringComparison.OrdinalIgnoreCase)) && !string.IsNullOrWhiteSpace(_printers[i].Ip))
+                _printers[i] = _printers[i] with { Name = _printers[i].Ip.Trim() };
+        }
         RefreshList();
         if (_printers.Count > 0) { _list.Items[0].Selected = true; }
     }
@@ -208,7 +226,7 @@ public sealed class ConfigureForm : Form
         _list.Items.Clear();
         foreach (var p in _printers)
         {
-            var name = string.IsNullOrWhiteSpace(p.Name) ? "(fill in a name)" : p.Name;
+            var name = string.IsNullOrWhiteSpace(p.Name) ? p.Ip : p.Name;
             var ready = p.Type == "bambu" ? (!string.IsNullOrWhiteSpace(p.Serial) && !string.IsNullOrWhiteSpace(p.AccessCode))
                 : (!string.IsNullOrWhiteSpace(p.PaxxUser) && !string.IsNullOrWhiteSpace(p.PaxxPassword)) || !string.IsNullOrWhiteSpace(p.AccessCode);
             var item = new ListViewItem(name);
@@ -343,14 +361,13 @@ public sealed class ConfigureForm : Form
                 {
                     if (_printers.Any(p => string.Equals(p.Ip, c.Ip, StringComparison.OrdinalIgnoreCase))) continue;
                 }
-                var printer = new PrinterConfig { Name = "", Type = c.Kind, Ip = c.Ip, Camera = true, Mac = mac };
-                printer = printer with { Name = AutoName(printer) };
+                var printer = new PrinterConfig { Name = c.Ip, Type = c.Kind, Ip = c.Ip, Camera = true, Mac = mac };
                 _printers.Add(printer);
                 added++;
             }
             RefreshList();
             _status.Text = added > 0 || updated > 0
-                ? $"Found {candidates.Count} port-open device(s). {added} new printer(s) added with model names from their IP, {updated} known printer(s) moved to a new IP by MAC. Select a printer, fill in serial + access code for Bambu (or Moonraker key / Paxx login for U1), Apply to list, then Save. Delete any that are not printers."
+                ? $"Found {candidates.Count} port-open device(s). {added} new printer(s) added, named by their IP, {updated} known printer(s) moved to a new IP by MAC. Select a printer, fill in serial + access code for Bambu (or Moonraker key / Paxx login for U1), Apply to list, then Save. Delete any that are not printers."
                 : $"Found {candidates.Count} candidate(s), all already in the list. A port being open is not proof it is a printer.";
         }
         catch (Exception ex)
@@ -389,8 +406,8 @@ public sealed class ConfigureForm : Form
         _printers.RemoveAll(p => string.IsNullOrWhiteSpace(p.Ip));
         for (var i = 0; i < _printers.Count; i++)
         {
-            if (string.IsNullOrWhiteSpace(_printers[i].Name))
-                _printers[i] = _printers[i] with { Name = AutoName(_printers[i]) };
+            if (string.IsNullOrWhiteSpace(_printers[i].Name) && !string.IsNullOrWhiteSpace(_printers[i].Ip))
+                _printers[i] = _printers[i] with { Name = _printers[i].Ip.Trim() };
         }
         RefreshList();
         var incomplete = _printers.Where(p => p.Type == "bambu" &&
