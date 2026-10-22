@@ -133,6 +133,17 @@ if (Test-Path $appDir) {
     New-Item -ItemType Directory -Force -Path $preserveDir | Out-Null
     Copy-Item (Join-Path $appDir 'bridge-config.json') $preserveDir -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $appDir 'bridge-key.txt') $preserveDir -Force -ErrorAction SilentlyContinue
+    # Validation: move files that are not part of a clean publish into
+    # "Outdated or Unknown Files" instead of deleting them, so stale
+    # files cannot cause future bugs, and nothing is lost silently.
+    $expected = @('C3DBridge.exe','C3DBridge.dll','C3DBridge.deps.json','C3DBridge.runtimeconfig.json','C3DBridge.pdb','MQTTnet.dll','bridge-config.json','bridge-key.txt')
+    $outdated = Join-Path $appDir 'Outdated or Unknown Files'
+    foreach ($f in Get-ChildItem $appDir -Force -File -ErrorAction SilentlyContinue) {
+        if ($expected -notcontains $f.Name) {
+            New-Item -ItemType Directory -Force -Path $outdated | Out-Null
+            Move-Item $f.FullName $outdated -Force -ErrorAction SilentlyContinue
+        }
+    }
     Get-ChildItem $appDir -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 $projectPath = Join-Path $SourceDir 'src\C3DBridge'
