@@ -217,11 +217,16 @@ public static class Updater
             var scriptPath = Path.Combine(Path.GetTempPath(), "C3DBridge-update.ps1");
             var script = BuildUpdateScript(parent, sourceDir, installer, appDir, latestVersion);
             File.WriteAllText(scriptPath, script);
+            // Hide the updater PowerShell window entirely: the
+            // update reports its result in its own message box,
+            // so a leftover console window after a reinstall is
+            // just clutter (reported Oct 22, 2026). Errors still
+            // surface via that message box, not via the console.
             var psi = new ProcessStartInfo("powershell.exe",
                 $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"")
             {
                 UseShellExecute = false,
-                CreateNoWindow = false,
+                CreateNoWindow = true,
             };
             Process.Start(psi);
             return true;
@@ -247,7 +252,7 @@ $ErrorActionPreference = 'Stop'
 # instance exits right after relaunching, so only one copy runs.
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{
-    Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+    Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
     exit
 }}
 Write-Host 'C3D Print Bridge updater — updating to v{latestVersion}...'

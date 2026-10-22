@@ -1,0 +1,13 @@
+C3D Print Bridge - version 2026.1021.2271
+Hide the reinstall PowerShell window, per user request.
+- Get updates now launches its PowerShell update script
+  with CreateNoWindow and, when self-elevating, WindowStyle
+  Hidden, so no PowerShell console is left open after a
+  reinstall/update. The update still reports its result in
+  its own message box, so hiding the console loses no
+  outcome information.
+- Run-Installer.bat now only pauses on failure
+  (if errorlevel 1 pause) instead of pausing every time,
+  so a successful install closes its window on its own
+  and a failed install still stays open for reading.
+- Everything else unchanged from 2270 (FreeConsole tray).
