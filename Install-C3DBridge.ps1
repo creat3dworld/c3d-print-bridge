@@ -229,17 +229,9 @@ if (-not (Test-Path (Join-Path $appDir 'bridge-key.txt'))) {
 }
 # Start after install: a git update was already checked for on purpose,
 # so it starts without asking. A fresh install asks first (safety check).
-if ($FromUpdate) {
-    Start-ScheduledTask -TaskName 'C3D Print Bridge' -ErrorAction SilentlyContinue
-    Write-Host 'Bridge started (update install, no prompt needed).' -ForegroundColor Green
-} else {
-    $startAnswer = Read-Host 'Start the bridge now? [Y/n]'
-    if ($startAnswer -eq '' -or $startAnswer -match '^[Yy]') {
-        Start-ScheduledTask -TaskName 'C3D Print Bridge' -ErrorAction SilentlyContinue
-        Write-Host 'Bridge started.' -ForegroundColor Green
-    } else {
-        Write-Host 'Bridge not started now. It will start at your next sign-in.' -ForegroundColor Yellow
-    }
-}
+# Always start the bridge after install: that is the point of the
+# software. No prompt, fresh or update. Exit from the tray if needed.
+Start-ScheduledTask -TaskName 'C3D Print Bridge' -ErrorAction SilentlyContinue
+Write-Host 'Bridge started.' -ForegroundColor Green
 Write-Host '  - or just double-click C3DBridge.exe in the app folder. Either way, it shows as a tray icon by the clock.'
 Write-Host 'Right-click the tray icon for Configure (printer list, Scan, access codes, dashboard key), Self-test, Get updates, and Exit.'
