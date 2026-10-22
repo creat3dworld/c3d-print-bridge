@@ -1,0 +1,15 @@
+C3D Print Bridge - version 2026.1021.2268
+Cache-buster for the update check, per user request.
+- Get updates now fetches Program.cs with a unique ?t=<unix
+  seconds> query on every check, plus Cache-Control: no-cache
+  and Pragma: no-cache headers, so GitHub's raw cache cannot
+  serve the previous version and wrongly report "already up
+  to date" for minutes after a push.
+- Honest limit: this only helps once a PC is ON 2268 or later.
+  A PC still on 2266/2267 checks without the buster, so it can
+  still see a cached 2267 for a few minutes — then the cache
+  expires and the update appears. Future versions after 2268
+  will check fresh every time.
+- Everything else unchanged from 2267: flyout added to form
+  Controls, 2264 FlowLayout with fixed-size panels, installer
+  restore-on-failed-project-check.

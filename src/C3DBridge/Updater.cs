@@ -51,8 +51,15 @@ public static class Updater
     public const string RepoName = "C3d-print-bridge";
     public const string Branch = "main";
 
+    // Cache-buster: GitHub's raw file cache can serve the previous
+    // version for minutes after a push, so Get updates wrongly
+    // reports "already up to date" on a new version. A unique
+    // query string per check makes each check a fresh fetch
+    // (raw serves the same file regardless of query), and the
+    // no-cache headers tell any intermediate cache not to reuse
+    // an old copy either. Added Oct 22, 2026 per user request.
     private static string RawUrl =>
-        $"https://raw.githubusercontent.com/{RepoOwner}/{RepoName}/{Branch}/src/C3DBridge/Program.cs";
+        $"https://raw.githubusercontent.com/{RepoOwner}/{RepoName}/{Branch}/src/C3DBridge/Program.cs?t={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
 
     // Version scheme (Oct 21, 2026): YYYY.MMDD.HHMM, 24-hour, to the minute.
     // If two revisions land within the same minute, append .# to the
@@ -116,6 +123,8 @@ public static class Updater
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+            http.DefaultRequestHeaders.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoCache = true };
+            http.DefaultRequestHeaders.Pragma.ParseAdd("no-cache");
             using var res = await http.GetAsync(RawUrl);
             if (res.IsSuccessStatusCode)
             {
