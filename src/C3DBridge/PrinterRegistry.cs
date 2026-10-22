@@ -24,7 +24,7 @@ public sealed class PrinterRegistry
             {
                 "bambu" => new BambuAdapter(p),
                 "snapmaker" => new SnapmakerAdapter(p),
-                _ => throw new InvalidOperationException($"Unknown printer type '{p.Type}'."),
+                _ => new GenericAdapter(p),
             };
             _byName[p.Name] = adapter;
         }

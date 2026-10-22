@@ -43,15 +43,15 @@ public static class Config
             var json = File.ReadAllText(ConfigPath);
             var cfg = JsonSerializer.Deserialize<BridgeConfig>(json, JsonOptions);
             if (cfg is null) return (null, "Config file parsed to nothing; it is empty or invalid JSON.");
-            cfg = cfg with { Printers = cfg.Printers.Select(pr => pr with { AccessCode = SecureStore.Unprotect(pr.AccessCode), PaxxPassword = SecureStore.Unprotect(pr.PaxxPassword) }).ToList() };
+            cfg = cfg with { Printers = cfg.Printers.Select(pr => pr with { AccessCode = SecureStore.Unprotect(pr.AccessCode), PaxxPassword = SecureStore.Unprotect(pr.PaxxPassword), LoginPassword = SecureStore.Unprotect(pr.LoginPassword) }).ToList() };
             if (string.IsNullOrWhiteSpace(cfg.DashboardBaseUrl)) return (null, "Config is missing dashboard_base_url.");
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var p in cfg.Printers)
             {
                 if (string.IsNullOrWhiteSpace(p.Name)) return (null, "A printer entry is missing its name.");
                 if (!names.Add(p.Name)) return (null, $"Duplicate printer name in config: {p.Name}.");
-                if (p.Type != "bambu" && p.Type != "snapmaker")
-                    return (null, $"Printer '{p.Name}' has unknown type '{p.Type}' (expected 'bambu' or 'snapmaker').");
+                if (string.IsNullOrWhiteSpace(p.Type))
+                    return (null, $"Printer '{p.Name}' has no type. Pick a brand/firmware in Configure.");
                 if (string.IsNullOrWhiteSpace(p.Ip)) return (null, $"Printer '{p.Name}' is missing its IP address.");
             }
             return (cfg, null);
@@ -68,7 +68,7 @@ public static class Config
     /// the separate bridge-key file.</summary>
     public static void Save(BridgeConfig cfg)
     {
-        var safe = cfg with { Printers = cfg.Printers.Select(pr => pr with { AccessCode = string.IsNullOrWhiteSpace(pr.AccessCode) || pr.AccessCode.StartsWith("dpapi:", StringComparison.Ordinal) ? pr.AccessCode : SecureStore.Protect(pr.AccessCode), PaxxPassword = string.IsNullOrWhiteSpace(pr.PaxxPassword) || pr.PaxxPassword.StartsWith("dpapi:", StringComparison.Ordinal) ? pr.PaxxPassword : SecureStore.Protect(pr.PaxxPassword) }).ToList() };
+        var safe = cfg with { Printers = cfg.Printers.Select(pr => pr with { AccessCode = string.IsNullOrWhiteSpace(pr.AccessCode) || pr.AccessCode.StartsWith("dpapi:", StringComparison.Ordinal) ? pr.AccessCode : SecureStore.Protect(pr.AccessCode), PaxxPassword = string.IsNullOrWhiteSpace(pr.PaxxPassword) || pr.PaxxPassword.StartsWith("dpapi:", StringComparison.Ordinal) ? pr.PaxxPassword : SecureStore.Protect(pr.PaxxPassword), LoginPassword = string.IsNullOrWhiteSpace(pr.LoginPassword) || pr.LoginPassword.StartsWith("dpapi:", StringComparison.Ordinal) ? pr.LoginPassword : SecureStore.Protect(pr.LoginPassword) }).ToList() };
         File.WriteAllText(ConfigPath, JsonSerializer.Serialize(safe, JsonOptions));
         RestrictFile(ConfigPath);
     }

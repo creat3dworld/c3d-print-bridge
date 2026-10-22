@@ -17,7 +17,7 @@ namespace C3DBridge;
 public sealed record PrinterConfig
 {
     [JsonPropertyName("name")] public string Name { get; init; } = "";
-    /// <summary>"bambu" or "snapmaker". Anything else is rejected at config load.</summary>
+    /// <summary>Printer brand/firmware, e.g. "bambu", "snapmaker", or any other brand typed in Configure. Unknown types use the generic adapter.</summary>
     [JsonPropertyName("type")] public string Type { get; init; } = "";
     [JsonPropertyName("ip")] public string Ip { get; init; } = "";
     /// <summary>MAC address, when known, used to follow a DHCP printer
@@ -40,6 +40,12 @@ public sealed record PrinterConfig
     /// <summary>Snapmaker Paxx API password, when created on the printer.
     /// Stored ONLY in the local config file on the PC. Never committed.</summary>
     [JsonPropertyName("paxx_password")] public string? PaxxPassword { get; init; }
+    /// <summary>Generic login username, for brands outside Bambu/Snapmaker.
+    /// For Bambu/Snapmaker this mirrors the brand login (Paxx username for Snapmaker).</summary>
+    [JsonPropertyName("login_user")] public string? LoginUser { get; init; }
+    /// <summary>Generic login password / API key, for brands outside Bambu/Snapmaker.
+    /// Stored ONLY in the local config file on the PC. Never committed.</summary>
+    [JsonPropertyName("login_password")] public string? LoginPassword { get; init; }
     /// <summary>True when this printer has a camera the bridge could
     /// report a feed from. False/missing means no camera recorded.</summary>
     [JsonPropertyName("camera")] public bool Camera { get; init; }
