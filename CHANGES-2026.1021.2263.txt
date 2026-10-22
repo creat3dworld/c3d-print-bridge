@@ -1,0 +1,62 @@
+C3D Print Bridge - version 2026.1021.2263
+Flyout fixes for the three issues found testing 2262, plus the two
+removals and the new sync rules found in the same session:
+
+- Flyout fields no longer stack, hide behind the title, or go
+  missing depending on how the flyout was opened. Fields now
+  live in a FlowLayoutPanel, one panel per field, so hiding a
+  field collapses it and the rest reflow. Needs setup link, row
+  double-click, and Configure selected all run the same open
+  path and show Name, Brand, IP Address, Device ID, and Access
+  Code for Bambu, with nothing stacked or behind the title.
+- Closing a flyout is never trapped by a validation warning
+  again. Bambu missing Device ID / Access code, a duplicate
+  name, a blank IP, or any other invalid field shows its
+  warning once, then the flyout still closes and those changes
+  are discarded (the saved list is untouched). Closing the
+  whole Configure window is never blocked either — it used
+  to cancel the close and force a Task Kill. It cannot do
+  that now.
+- Duplicate names no longer block anything. Names still stay
+  unique, but a duplicate is auto-renamed ("10.0.0.214 2")
+  instead of a warning loop. The duplicate itself came from
+  selection changes overwriting the editing target while a
+  flyout was open for another printer: selection alone no
+  longer changes the editing target, and Apply now targets
+  the printer the flyout actually opened, by reference.
+- Deleting an Access code / API key, then changing brand, no
+  longer restores the old value. Each box now holds only its
+  own brand's value (Other's password box no longer comes
+  pre-filled with the API key, Snapmaker's password box no
+  longer comes pre-filled with the Moonraker key). Changing
+  brand carries the CURRENT edited credential, not the
+  original: Other -> Bambu carries the current API key box
+  (empty if deleted), Bambu -> Other carries the current
+  Access code into the API key box and starts the password
+  empty, Bambu <-> Snapmaker clears the password.
+- Open IP in browser button removed from the button grid.
+  Snapmaker IPs are still clickable blue links in the table
+  itself; Bambu has no browser page.
+- "Found 4 port-open device(s)..." status text removed from
+  the button grid. Scan now just says "Saved to disk." or
+  "No new printers found."; Pull says "Pulled and saved."
+- Cut-off with the flyout open fixed two ways: with those two
+  grid items gone the grid is 3 columns, and the window now
+  recenters on the screen it is actually on (laptop vs TV)
+  and never grows past that screen's working area, so the
+  right edge can no longer run off-screen and clip buttons.
+- Dashboard data updates automatically from the bridge:
+  every Configure save (flyout close, Scan, Pull) pushes the
+  device config to the dashboard at once — no manual Pull
+  needed for adds or edits, and the tray restarts the relay
+  loop on close so status/heartbeat pushes (every 30/60s)
+  pick up the new config immediately.
+- Sync rule: client deletes are local only. Deleting a
+  printer in Configure saves locally and does NOT push to
+  the dashboard, so a local delete can never remove a
+  dashboard printer. Dashboard deletes come from the
+  dashboard. Adds and edits from the client still push.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.

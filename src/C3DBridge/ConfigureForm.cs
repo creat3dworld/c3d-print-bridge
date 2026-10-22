@@ -35,6 +35,8 @@ public sealed class ConfigureForm : Form
     private readonly List<PrinterConfig> _printers;
     private int _editingIndex = -1;
     private PrinterConfig? _loadedPrinter;
+    private string? _prevBrand;
+    private bool _suppressBrandSync;
     private bool _flyoutPrinterMode = true;
 
     private readonly ListView _list = new();
@@ -60,6 +62,18 @@ public sealed class ConfigureForm : Form
     private Label _typeLabel = new();
     private Label _ipLabel = new();
     private Label _apiKeyLabel = new();
+    private Label _keyLabel = new();
+    private Label _targetLabel = new();
+    private readonly FlowLayoutPanel _flyFlow = new();
+    private readonly Panel _namePanel = new();
+    private readonly Panel _brandIpPanel = new();
+    private readonly Panel _deviceIdPanel = new();
+    private readonly Panel _loginUserPanel = new();
+    private readonly Panel _loginPassPanel = new();
+    private readonly Panel _apiKeyPanel = new();
+    private readonly Panel _keyPanel = new();
+    private readonly Panel _targetPanel = new();
+    private readonly Panel _portHintPanel = new();
     private static string Capitalize(string s) => string.IsNullOrWhiteSpace(s) ? s : char.ToUpperInvariant(s[0]) + s[1..].ToLowerInvariant();
 
     public ConfigureForm(BridgeConfig initial, bool hasKey)
@@ -73,11 +87,12 @@ public sealed class ConfigureForm : Form
 
         Text = "C3D Print Bridge — Configure";
         DoubleBuffered = true;
-        // Everything is auto-saved, so closing the window is never
-        // a discard: report OK so the tray restarts the relay loop.
-        // If the flyout is still open, apply + save its fields
-        // first (unless they are invalid, in which case stay open).
-        FormClosing += (_, e) => { if (_flyout.Visible) { CloseFlyout(); if (_flyout.Visible) { e.Cancel = true; return; } } DialogResult = DialogResult.OK; };
+        // Closing the window is NEVER blocked by a flyout
+        // validation: CloseFlyout always hides the flyout (invalid
+        // changes are discarded), and this handler forces the
+        // flyout closed rather than cancelling. A validation
+        // error must never force a Task Kill to close the app.
+        FormClosing += (_, e) => { if (_flyout.Visible) { CloseFlyout(); _flyout.Visible = false; } DialogResult = DialogResult.OK; };
         AutoScaleMode = AutoScaleMode.Dpi;
         Font = new System.Drawing.Font("Segoe UI", 10);
         FormBorderStyle = FormBorderStyle.Sizable;
@@ -111,20 +126,68 @@ public sealed class ConfigureForm : Form
         topBar.Controls.Add(autoSaveNote);
         Controls.Add(topBar);
 
-        // Flyout (right, hidden by default)
+        // Flyout (right, hidden by default). Fields live in a
+        // FlowLayoutPanel, one panel per field, so fields can never
+        // stack on top of each other: hiding a field collapses its
+        // panel and the rest reflow. Absolute Top math is gone.
         SetDoubleBuffered(_flyout);
         _flyout.Dock = DockStyle.Right;
         _flyout.Width = 360;
         _flyout.Visible = false;
         _flyout.BackColor = System.Drawing.Color.FromArgb(245, 245, 245);
-        _flyout.Padding = new Padding(12);
-        _flyout.AutoScroll = true;
+        _flyout.Padding = new Padding(0);
+        var flyTitlePanel = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = System.Drawing.Color.FromArgb(245, 245, 245) };
         _flyTitle.Left = 12; _flyTitle.Top = 8; _flyTitle.Width = 280; _flyTitle.Height = 20; _flyTitle.Font = new System.Drawing.Font("Segoe UI", 10, System.Drawing.FontStyle.Bold);
-        _flyout.Controls.Add(_flyTitle);
+        flyTitlePanel.Controls.Add(_flyTitle);
         _flyClose.Text = "X"; _flyClose.Left = 312; _flyClose.Top = 4; _flyClose.Width = 32; _flyClose.Height = 28;
         _flyClose.Click += (_, _) => CloseFlyout();
-        _flyout.Controls.Add(_flyClose);
-        Controls.Add(_flyout);
+        flyTitlePanel.Controls.Add(_flyClose);
+        _flyout.Controls.Add(flyTitlePanel);
+        _flyFlow.Dock = DockStyle.Fill;
+        _flyFlow.FlowDirection = FlowDirection.TopDown;
+        _flyFlow.WrapContents = false;
+        _flyFlow.AutoScroll = true;
+        _flyFlow.Padding = new Padding(12);
+        _flyFlow.BackColor = System.Drawing.Color.FromArgb(245, 245, 245);
+        SetDoubleBuffered(_flyFlow);
+        _flyout.Controls.Add(_flyFlow);
+        // Field panels: label on top, control filling the rest.
+        _namePanel.Width = 320; _namePanel.Height = 48; _namePanel.Margin = new Padding(0, 0, 0, 4);
+        _nameLabel.Dock = DockStyle.Top; _nameLabel.Height = 18; _name.Dock = DockStyle.Fill;
+        _namePanel.Controls.Add(_nameLabel); _namePanel.Controls.Add(_name);
+        _brandIpPanel.Width = 320; _brandIpPanel.Height = 48; _brandIpPanel.Margin = new Padding(0, 0, 0, 4);
+        var brandPanel = new Panel { Dock = DockStyle.Left, Width = 152, Height = 48 };
+        _typeLabel.Dock = DockStyle.Top; _typeLabel.Height = 18; _type.Dock = DockStyle.Fill;
+        brandPanel.Controls.Add(_typeLabel); brandPanel.Controls.Add(_type);
+        var ipPanel = new Panel { Dock = DockStyle.Right, Width = 152, Height = 48 };
+        _ipLabel.Dock = DockStyle.Top; _ipLabel.Height = 18; _ip.Dock = DockStyle.Fill;
+        ipPanel.Controls.Add(_ipLabel); ipPanel.Controls.Add(_ip);
+        _brandIpPanel.Controls.Add(brandPanel); _brandIpPanel.Controls.Add(ipPanel);
+        _deviceIdPanel.Width = 320; _deviceIdPanel.Height = 48; _deviceIdPanel.Margin = new Padding(0, 0, 0, 4);
+        _deviceIdLabel.Dock = DockStyle.Top; _deviceIdLabel.Height = 18; _deviceId.Dock = DockStyle.Fill;
+        _deviceIdPanel.Controls.Add(_deviceIdLabel); _deviceIdPanel.Controls.Add(_deviceId);
+        _loginUserPanel.Width = 320; _loginUserPanel.Height = 48; _loginUserPanel.Margin = new Padding(0, 0, 0, 4);
+        _loginUserLabel.Dock = DockStyle.Top; _loginUserLabel.Height = 18; _loginUser.Dock = DockStyle.Fill;
+        _loginUserPanel.Controls.Add(_loginUserLabel); _loginUserPanel.Controls.Add(_loginUser);
+        _loginPassPanel.Width = 320; _loginPassPanel.Height = 48; _loginPassPanel.Margin = new Padding(0, 0, 0, 4);
+        _loginPassLabel.Dock = DockStyle.Top; _loginPassLabel.Height = 18;
+        var passRow = new Panel { Dock = DockStyle.Fill };
+        _loginPass.Dock = DockStyle.Fill; _eyeBtn.Dock = DockStyle.Right; _eyeBtn.Width = 32;
+        passRow.Controls.Add(_loginPass); passRow.Controls.Add(_eyeBtn);
+        _loginPassPanel.Controls.Add(_loginPassLabel); _loginPassPanel.Controls.Add(passRow);
+        _apiKeyPanel.Width = 320; _apiKeyPanel.Height = 48; _apiKeyPanel.Margin = new Padding(0, 0, 0, 4);
+        _apiKeyLabel.Dock = DockStyle.Top; _apiKeyLabel.Height = 18; _apiKeyBox.Dock = DockStyle.Fill;
+        _apiKeyPanel.Controls.Add(_apiKeyLabel); _apiKeyPanel.Controls.Add(_apiKeyBox);
+        _keyPanel.Width = 320; _keyPanel.Height = 48; _keyPanel.Margin = new Padding(0, 0, 0, 4);
+        _keyLabel.Dock = DockStyle.Top; _keyLabel.Height = 18; _key.Dock = DockStyle.Fill;
+        _keyPanel.Controls.Add(_keyLabel); _keyPanel.Controls.Add(_key);
+        _targetPanel.Width = 320; _targetPanel.Height = 48; _targetPanel.Margin = new Padding(0, 0, 0, 4);
+        _targetLabel.Dock = DockStyle.Top; _targetLabel.Height = 18; _target.Dock = DockStyle.Fill;
+        _targetPanel.Controls.Add(_targetLabel); _targetPanel.Controls.Add(_target);
+        _portHintPanel.Width = 320; _portHintPanel.Height = 48; _portHintPanel.Margin = new Padding(0, 0, 0, 4);
+        _portHint.Dock = DockStyle.Fill; _portHint.AutoSize = false; _portHint.ForeColor = System.Drawing.Color.Gray;
+        _portHintPanel.Controls.Add(_portHint);
+        foreach (var pn in new Panel[] { _namePanel, _brandIpPanel, _deviceIdPanel, _loginUserPanel, _loginPassPanel, _apiKeyPanel, _keyPanel, _targetPanel, _portHintPanel }) _flyFlow.Controls.Add(pn);
 
         // Main list area (fills remaining space, scales with window).
         // No description label above the table: just the table.
@@ -139,7 +202,12 @@ public sealed class ConfigureForm : Form
         _list.Columns.Add("Status", 130);
         _list.Left = 0; _list.Top = 0;
         _list.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-        _list.SelectedIndexChanged += (_, _) => { if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count) _editingIndex = _list.SelectedIndices[0]; };
+        // NOTE: selection alone does NOT set _editingIndex.
+        // That used to write flyout fields into the wrong printer
+        // when a row was clicked while the flyout was open for
+        // another printer, creating duplicate names that then
+        // blocked every close. _editingIndex is set only when a
+        // flyout actually opens for that printer.
         // IP click must behave the same whether the flyout is open or
         // closed, so the column is worked out from the X coordinate
         // and the actual column widths, not from HitTest's subitem,
@@ -175,16 +243,17 @@ public sealed class ConfigureForm : Form
         // math that used to hide the second row.
         var buttonPanel = new Panel { Dock = DockStyle.Bottom, Height = 84 };
         SetDoubleBuffered(buttonPanel);
-        var buttonGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 2, Margin = new Padding(0) };
-        for (var i = 0; i < 4; i++) buttonGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        var buttonGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2, Margin = new Padding(0) };
+        for (var i = 0; i < 3; i++) buttonGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
         buttonGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         buttonGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         var scanBtn = new Button { Text = "Scan WiFi", Dock = DockStyle.Fill, Margin = new Padding(4) };
         scanBtn.Click += async (_, _) => await ScanAsync(scanBtn);
         var deleteBtn = new Button { Text = "Delete selected", Dock = DockStyle.Fill, Margin = new Padding(4) };
         deleteBtn.Click += (_, _) => DeleteSelected();
-        var openBtn = new Button { Text = "Open IP in browser", Dock = DockStyle.Fill, Margin = new Padding(4) };
-        openBtn.Click += (_, _) => { if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count) { var pr = _printers[_list.SelectedIndices[0]]; if (string.Equals((pr.Type ?? "").Trim(), "bambu", StringComparison.OrdinalIgnoreCase)) { MessageBox.Show("Bambu printers have no browser page — use Bambu Studio or Bambu Handy for this printer. Its IP is only for the bridge's MQTT connection.", "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Information); return; } var ip = pr.Ip; if (!string.IsNullOrWhiteSpace(ip)) { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("http://" + ip.Trim()) { UseShellExecute = true }); } catch { } } } };
+        // No "Open IP in browser" button any more: the IP in the
+        // table itself is the link for Snapmaker, and Bambu has no
+        // browser page, so the button was only taking a slot.
         var pullBtn = new Button { Text = "Pull from dashboard", Dock = DockStyle.Fill, Margin = new Padding(4) };
         pullBtn.Click += async (_, _) => await PullFromDashboardAsync(pullBtn);
         var bridgeBtn = new Button { Text = "Bridge settings", Dock = DockStyle.Fill, Margin = new Padding(4) };
@@ -193,9 +262,8 @@ public sealed class ConfigureForm : Form
         confBtn.Click += (_, _) => { if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count) { _editingIndex = _list.SelectedIndices[0]; OpenFlyoutPrinter(_printers[_editingIndex]); } };
         _status.AutoSize = false; _status.Dock = DockStyle.Fill; _status.Margin = new Padding(4);
         _status.Text = "Scan only sees printers on this PC's own network. A found port is a candidate, not a confirmed printer.";
-        buttonGrid.Controls.Add(scanBtn, 0, 0); buttonGrid.Controls.Add(deleteBtn, 1, 0); buttonGrid.Controls.Add(openBtn, 2, 0); buttonGrid.Controls.Add(pullBtn, 3, 0);
+        buttonGrid.Controls.Add(scanBtn, 0, 0); buttonGrid.Controls.Add(deleteBtn, 1, 0); buttonGrid.Controls.Add(pullBtn, 2, 0);
         buttonGrid.Controls.Add(bridgeBtn, 0, 1); buttonGrid.Controls.Add(confBtn, 1, 1); buttonGrid.Controls.Add(_status, 2, 1);
-        buttonGrid.SetColumnSpan(_status, 2);
         buttonPanel.Controls.Add(buttonGrid);
         main.Controls.Add(buttonPanel);
         main.Resize += (_, _) => {
@@ -203,7 +271,7 @@ public sealed class ConfigureForm : Form
             _list.Height = Math.Max(100, main.ClientSize.Height - buttonPanel.Height - 24);
         };
         Controls.Add(main);
-        // Flyout fields (created once, laid out by LayoutFlyout)
+        // Flyout fields (created once, laid out by the FlowLayoutPanel)
         _nameLabel.Text = "Name"; _typeLabel.Text = "Brand"; _ipLabel.Text = "IP Address"; _apiKeyLabel.Text = "API Key";
         _deviceIdLabel.Text = "Device ID"; _loginUserLabel.Text = "Username"; _loginPassLabel.Text = "Password";
         _type.DropDownStyle = ComboBoxStyle.DropDown; _type.Items.Add("Bambu"); _type.Items.Add("Snapmaker"); _type.Items.Add("Other");
@@ -217,9 +285,10 @@ public sealed class ConfigureForm : Form
         _target.Text = _initial.DashboardBaseUrl;
         _target.TextChanged += (_, _) => UpdatePortHint();
         UpdatePortHint();
-        foreach (var c in new Control[] { _nameLabel, _name, _typeLabel, _type, _ipLabel, _ip, _deviceIdLabel, _deviceId, _loginUserLabel, _loginUser, _loginPassLabel, _loginPass, _eyeBtn, _apiKeyLabel, _apiKeyBox }) _flyout.Controls.Add(c);
-        foreach (var c in new Control[] { new Label { Text = "Dashboard API key (leave blank to keep current)" }, _key, new Label { Text = "Dashboard host URL" }, _target, _portHint }) { _flyout.Controls.Add(c); _bridgeControls.Add(c); }
-        // Bridge controls are the last 5 added; track them by reference for visibility toggling
+        _keyLabel.Text = "Dashboard API Key"; _targetLabel.Text = "Dashboard host URL";
+        // Bridge panels are the bridge-mode fields; printer panels
+        // are the printer-mode fields. FlowLayout reflows them.
+        foreach (var pn in new Panel[] { _keyPanel, _targetPanel, _portHintPanel }) _bridgeControls.Add(pn);
         RefreshList();
         if (_printers.Count > 0) { _list.Items[0].Selected = true; }
         ScaleColumns();
@@ -238,6 +307,9 @@ public sealed class ConfigureForm : Form
         // Force a full repaint now, instead of waiting for a move or
         // resize to repaint: this is what makes the ghost go away.
         _flyout.AutoScrollPosition = new System.Drawing.Point(0, 0);
+        _flyFlow.AutoScrollPosition = new System.Drawing.Point(0, 0);
+        _flyFlow.Invalidate(true);
+        _flyFlow.Update();
         _flyout.Invalidate(true);
         _flyout.Update();
         Invalidate(true);
@@ -268,9 +340,10 @@ public sealed class ConfigureForm : Form
         _flyoutPrinterMode = true;
         _flyTitle.Text = pr == null ? "Add printer" : "Configure printer";
         _loadedPrinter = pr;
+        _editingIndex = pr == null ? -1 : _printers.IndexOf(pr);
         if (pr != null) LoadFields(pr); else ClearFields();
         foreach (var c in _bridgeControls) c.Visible = false;
-        foreach (var c in new Control[] { _nameLabel, _name, _typeLabel, _type, _ipLabel, _ip, _deviceIdLabel, _deviceId, _loginUserLabel, _loginUser, _loginPassLabel, _loginPass, _eyeBtn, _apiKeyLabel, _apiKeyBox }) c.Visible = true;
+        foreach (var c in new Control[] { _namePanel, _brandIpPanel, _deviceIdPanel, _loginUserPanel, _loginPassPanel, _apiKeyPanel }) c.Visible = true;
         UpdateLoginVisibility();
         _flyout.ResumeLayout(true);
         ShowFlyout();
@@ -280,91 +353,101 @@ public sealed class ConfigureForm : Form
         _flyout.SuspendLayout();
         _flyoutPrinterMode = false;
         _flyTitle.Text = "Bridge settings";
-        foreach (var c in new Control[] { _nameLabel, _name, _typeLabel, _type, _ipLabel, _ip, _deviceIdLabel, _deviceId, _loginUserLabel, _loginUser, _loginPassLabel, _loginPass, _eyeBtn, _apiKeyLabel, _apiKeyBox }) c.Visible = false;
+        foreach (var c in new Control[] { _namePanel, _brandIpPanel, _deviceIdPanel, _loginUserPanel, _loginPassPanel, _apiKeyPanel }) c.Visible = false;
         foreach (var c in _bridgeControls) c.Visible = true;
-        _eyeBtn.Visible = true;
-        LayoutFlyoutBridge();
         _flyout.ResumeLayout(true);
         ShowFlyout();
         RefreshFlyout();
     }
     private void ShowFlyout() {
-        if (!_flyout.Visible) { _flyout.Visible = true; Width += 360; Recenter(); }
+        if (!_flyout.Visible) {
+            _flyout.Visible = true;
+            var wa0 = Screen.FromControl(this)?.WorkingArea ?? Screen.PrimaryScreen?.WorkingArea ?? new System.Drawing.Rectangle(0, 0, 840, 560);
+            // Never grow past the screen the window is actually on
+            // (laptop vs TV): if the flyout would push the right edge
+            // off-screen, shrink to fit instead of cutting buttons off.
+            Width = Width + 360 > wa0.Width - 20 ? Math.Max(MinimumSize.Width, wa0.Width - 20) : Width + 360;
+            Recenter();
+        }
         // Focus the first field so the user can type immediately.
         if (_flyoutPrinterMode) { _name.Focus(); _name.SelectAll(); }
         else { _key.Focus(); }
         RefreshFlyout();
     }
     private void Recenter() {
-        var wa = Screen.PrimaryScreen?.WorkingArea ?? new System.Drawing.Rectangle(0, 0, 840, 560);
+        // Use the screen this window is actually on, not always the
+        // primary screen — the mini-PC moves between laptop and TV,
+        // and recentering to the wrong screen cut the right edge off.
+        var wa = Screen.FromControl(this)?.WorkingArea ?? Screen.PrimaryScreen?.WorkingArea ?? new System.Drawing.Rectangle(0, 0, 840, 560);
         if (Width > wa.Width - 20) Width = Math.Max(MinimumSize.Width, wa.Width - 20);
         Left = wa.Left + Math.Max(0, (wa.Width - Width) / 2);
+        if (Left + Width > wa.Right) Left = Math.Max(wa.Left, wa.Right - Width);
         Top = wa.Top + Math.Max(0, (wa.Height - Height) / 2);
     }
     private void CloseFlyout() {
         if (!_flyout.Visible) return;
         // No Save button any more: closing the flyout applies the
         // fields AND writes them to disk immediately. If the fields
-        // are invalid, the warning shows and the flyout stays open.
+        // are invalid, the warning shows once and the flyout still
+        // closes (those changes are discarded, the saved list is
+        // untouched) — closing must never be trapped by a warning.
+        var applied = true;
         if (_flyoutPrinterMode && (_name.Text.Trim().Length > 0 || _ip.Text.Trim().Length > 0 || _loadedPrinter != null)) {
-            if (!ApplyFields()) return;
+            applied = ApplyFields();
         }
         SaveToDisk();
-        _status.Text = "Saved to disk.";
+        if (!applied) _status.Text = "Closed without saving those fields.";
+        else if (!_flyoutPrinterMode) _status.Text = "Saved to disk.";
         _flyout.Visible = false; Width = Math.Max(MinimumSize.Width, Width - 360); Recenter();
         RefreshFlyout();
     }
-    private void LayoutFlyout() {
-        // Compact flyout: Name full-width, then Brand and IP
-        // side-by-side with short boxes (152px each), then the
-        // login fields full-width. No description rows, no camera
-        // row, no MAC row — that is what made it super long.
-        _nameLabel.Left = 12; _nameLabel.Top = 36; _nameLabel.Width = 320; _nameLabel.Height = 18;
-        _name.Left = 12; _name.Top = 54; _name.Width = 320; _name.Height = 28;
-        _typeLabel.Left = 12; _typeLabel.Top = 84; _typeLabel.Width = 152; _typeLabel.Height = 18;
-        _ipLabel.Left = 172; _ipLabel.Top = 84; _ipLabel.Width = 152; _ipLabel.Height = 18;
-        _type.Left = 12; _type.Top = 102; _type.Width = 152; _type.Height = 28;
-        _ip.Left = 172; _ip.Top = 102; _ip.Width = 152; _ip.Height = 28;
-        int t = 132;
-        foreach (var pair in new (Label, Control)[] { (_deviceIdLabel, _deviceId), (_loginUserLabel, _loginUser), (_loginPassLabel, _loginPass), (_apiKeyLabel, _apiKeyBox) }) {
-            if (!pair.Item1.Visible) continue;
-            pair.Item1.Left = 12; pair.Item1.Top = t; pair.Item1.Width = 320; pair.Item1.Height = 18;
-            pair.Item2.Left = 12; pair.Item2.Top = t + 18; pair.Item2.Width = 320; pair.Item2.Height = 28;
-            t += 48;
-        }
-        // Eye button sits on the password row, to its right.
-        _loginPass.Width = 280;
-        _eyeBtn.Left = 292; _eyeBtn.Top = _loginPass.Top; _eyeBtn.Width = 32; _eyeBtn.Height = 28;
-    }
-    private void LayoutFlyoutBridge() {
-        int t = 36;
-        // _bridgeControls order: label, _key, label, _target, _portHint
-        foreach (var c in _bridgeControls) { c.Left = 12; c.Top = t; c.Width = 320; c.Height = c is Label ? 18 : 28; t += c is Label ? 22 : 34; if (c == _portHint) c.Height = 48; }
-        _key.Width = 280;
-        _eyeBtn.Left = 292; _eyeBtn.Top = _key.Top; _eyeBtn.Width = 32; _eyeBtn.Height = 28;
-    }
+    // No absolute flyout layout any more: the FlowLayoutPanel
+    // stacks the visible field panels, so fields cannot stack
+    // on top of each other or hide behind the title, whichever
+    // path opened the flyout (Needs setup link, row double-click,
+    // or Configure selected all run the same OpenFlyoutPrinter).
     private void UpdateLoginVisibility() {
         var type = (_type.Text ?? "").Trim().ToLowerInvariant();
-        if (type == "bambu") {
-            _deviceIdLabel.Text = "Device ID / Serial"; _deviceIdLabel.Visible = true; _deviceId.Visible = true;
-            _loginUserLabel.Visible = false; _loginUser.Visible = false;
-            _loginPassLabel.Text = "Access Code"; _loginPassLabel.Visible = true; _loginPass.Visible = true;
-            _apiKeyLabel.Visible = false; _apiKeyBox.Visible = false;
-        } else if (type == "snapmaker") {
-            _deviceIdLabel.Visible = false; _deviceId.Visible = false;
-            _loginUserLabel.Text = "Username"; _loginUserLabel.Visible = true; _loginUser.Visible = true;
-            _loginPassLabel.Text = "Password"; _loginPassLabel.Visible = true; _loginPass.Visible = true;
-            _apiKeyLabel.Visible = false; _apiKeyBox.Visible = false;
-        } else {
-            _deviceIdLabel.Text = "Device ID / Serial"; _deviceIdLabel.Visible = true; _deviceId.Visible = true;
-            _loginUserLabel.Text = "Username"; _loginUserLabel.Visible = true; _loginUser.Visible = true;
-            _loginPassLabel.Text = "Password"; _loginPassLabel.Visible = true; _loginPass.Visible = true;
-            _apiKeyLabel.Visible = true; _apiKeyBox.Visible = true;
+        // Brand-change sync: carry the CURRENT edited credential,
+        // never the original loaded value. That is the access-code
+        // restore bug: Other's password box used to be filled with
+        // the API key on load, so deleting the API key left the old
+        // value in the password box, and switching to Bambu showed
+        // it again as the Access code. Now: Other -> Bambu carries
+        // the current API key box (empty if deleted); Bambu -> Other
+        // carries the current Access code into the API key box and
+        // starts the password empty; Bambu <-> Snapmaker clears the
+        // password, because a Paxx password is not a Bambu code.
+        // Snapmaker <-> Other share the password box, so it stays.
+        // Sync runs only on a real user brand change to a full
+        // brand name, never while LoadFields/ClearFields set the
+        // brand programmatically.
+        if (!_suppressBrandSync && _flyoutPrinterMode && _prevBrand != null && _prevBrand != type
+            && (type == "bambu" || type == "snapmaker" || type == "other")
+            && (_prevBrand == "bambu" || _prevBrand == "snapmaker" || _prevBrand == "other")) {
+            if (_prevBrand == "other" && type == "bambu") { _loginPass.Text = _apiKeyBox.Text; }
+            else if (_prevBrand == "bambu" && type == "other") { _apiKeyBox.Text = _loginPass.Text; _loginPass.Text = ""; }
+            else if (_prevBrand == "bambu" && type == "snapmaker") { _loginPass.Text = ""; }
+            else if (_prevBrand == "snapmaker" && type == "bambu") { _loginPass.Text = ""; }
+            _prevBrand = type;
         }
-        // Eye button is shown for every brand (the old Show-password
-        // checkbox was dead for Bambu; the eye is not).
-        _eyeBtn.Visible = true;
-        if (_flyoutPrinterMode) LayoutFlyout();
+        if (_flyoutPrinterMode && _prevBrand == null) _prevBrand = type;
+        if (type == "bambu") {
+            _deviceIdLabel.Text = "Device ID / Serial"; _deviceIdPanel.Visible = true;
+            _loginUserPanel.Visible = false;
+            _loginPassLabel.Text = "Access Code"; _loginPassPanel.Visible = true;
+            _apiKeyPanel.Visible = false;
+        } else if (type == "snapmaker") {
+            _deviceIdPanel.Visible = false;
+            _loginUserLabel.Text = "Username"; _loginUserPanel.Visible = true;
+            _loginPassLabel.Text = "Password"; _loginPassPanel.Visible = true;
+            _apiKeyPanel.Visible = false;
+        } else {
+            _deviceIdLabel.Text = "Device ID / Serial"; _deviceIdPanel.Visible = true;
+            _loginUserLabel.Text = "Username"; _loginUserPanel.Visible = true;
+            _loginPassLabel.Text = "Password"; _loginPassPanel.Visible = true;
+            _apiKeyPanel.Visible = true;
+        }
     }
     private void UpdatePortHint() {
         var url = _target.Text.Trim();
@@ -405,20 +488,30 @@ public sealed class ConfigureForm : Form
         ScaleColumns();
     }
     private void LoadFields(PrinterConfig p) {
+        // Each box holds ONLY its own brand's value. The old code
+        // filled Other's password box with the API key and
+        // Snapmaker's password box with the Moonraker key, so
+        // deleting one credential left a shadow copy that came
+        // back on a brand change. No cross-population any more.
+        _suppressBrandSync = true;
         _name.Text = p.Name;
         _type.Text = Capitalize(p.Type);
         _ip.Text = p.Ip;
-        _apiKeyBox.Text = p.AccessCode ?? "";
         _deviceId.Text = p.Serial ?? "";
         var type = (p.Type ?? "").Trim().ToLowerInvariant();
-        if (type == "bambu") { _loginUser.Text = ""; _loginPass.Text = p.AccessCode ?? ""; }
-        else if (type == "snapmaker") { _loginUser.Text = p.PaxxUser ?? p.LoginUser ?? ""; _loginPass.Text = p.PaxxPassword ?? p.LoginPassword ?? p.AccessCode ?? ""; }
-        else { _loginUser.Text = p.LoginUser ?? ""; _loginPass.Text = p.LoginPassword ?? p.AccessCode ?? ""; }
+        if (type == "bambu") { _loginUser.Text = ""; _loginPass.Text = p.AccessCode ?? ""; _apiKeyBox.Text = ""; }
+        else if (type == "snapmaker") { _loginUser.Text = p.PaxxUser ?? p.LoginUser ?? ""; _loginPass.Text = p.PaxxPassword ?? p.LoginPassword ?? ""; _apiKeyBox.Text = p.AccessCode ?? ""; }
+        else { _loginUser.Text = p.LoginUser ?? ""; _loginPass.Text = p.LoginPassword ?? ""; _apiKeyBox.Text = p.AccessCode ?? ""; }
+        _prevBrand = type;
+        _suppressBrandSync = false;
         // Camera is always on now; the checkbox is gone.
     }
     private void ClearFields() {
+        _suppressBrandSync = true;
         _name.Text = ""; _type.Text = "Other"; _ip.Text = "";
         _deviceId.Text = ""; _loginUser.Text = ""; _loginPass.Text = ""; _apiKeyBox.Text = "";
+        _prevBrand = "other";
+        _suppressBrandSync = false;
     }
     private bool ApplyFields() {
         var name = _name.Text.Trim();
@@ -427,39 +520,59 @@ public sealed class ConfigureForm : Form
         if (string.IsNullOrWhiteSpace(ip)) { MessageBox.Show("Fill in the printer's IP address first.", "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning); return false; }
         if (string.IsNullOrWhiteSpace(name)) name = ip; // internal only; the list shows Type + IP, never a duplicate Name column
         if (string.IsNullOrWhiteSpace(type)) { MessageBox.Show("Pick or type a brand / firmware type first.", "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning); return false; }
-        for (var i = 0; i < _printers.Count; i++) {
-            if (i != _editingIndex && string.Equals(_printers[i].Name, name, StringComparison.OrdinalIgnoreCase)) { MessageBox.Show($"A printer named '{name}' is already in the list. Names must be unique.", "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning); return false; }
-        }
+        // Target is the printer the flyout actually opened, by
+        // reference — never by a selection that may have moved
+        // while the flyout was open. That mismatch used to write
+        // one printer's fields over another's, creating the
+        // duplicate that then blocked every close.
+        var targetIndex = _loadedPrinter != null ? _printers.IndexOf(_loadedPrinter) : -1;
+        if (targetIndex < 0 && _editingIndex >= 0 && _editingIndex < _printers.Count) targetIndex = _editingIndex;
+        // Names must stay unique, but a duplicate must never
+        // block saving or closing: auto-rename instead of a
+        // warning loop (e.g. "10.0.0.214 2").
+        var renamed = false;
+        var baseName = name;
+        var suffix = 2;
+        while (_printers.Where((_, i) => i != targetIndex).Any(pr => string.Equals(pr.Name, name, StringComparison.OrdinalIgnoreCase))) { name = $"{baseName} {suffix}"; suffix++; renamed = true; }
         var deviceId = string.IsNullOrWhiteSpace(_deviceId.Text) ? null : _deviceId.Text.Trim();
         var user = string.IsNullOrWhiteSpace(_loginUser.Text) ? null : _loginUser.Text.Trim();
         var pass = string.IsNullOrWhiteSpace(_loginPass.Text) ? null : _loginPass.Text;
         var apiKey = string.IsNullOrWhiteSpace(_apiKeyBox.Text) ? null : _apiKeyBox.Text;
-        if (type == "bambu" && (deviceId == null || pass == null)) { MessageBox.Show("For a Bambu printer, fill in the Device ID / Serial and the Access code from the printer's screen before applying.", "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning); return false; }
-        var basePr = _editingIndex >= 0 ? _printers[_editingIndex] : new PrinterConfig();
+        // Bambu printers CAN be saved incomplete (no Device ID /
+        // Access code yet): they simply stay "Needs setup" until
+        // those are filled in. Blocking close on missing credentials
+        // trapped the user in the flyout with no way out.
+        var basePr = targetIndex >= 0 ? _printers[targetIndex] : new PrinterConfig();
         var printer = basePr with { Name = name, Type = type, Ip = ip, Serial = deviceId, LoginUser = user, LoginPassword = pass, Camera = true };
         if (type == "bambu") printer = printer with { AccessCode = pass, PaxxUser = null, PaxxPassword = null };
         else if (type == "snapmaker") {
             if (user != null) printer = printer with { PaxxUser = user, PaxxPassword = pass, AccessCode = basePr.AccessCode };
             else printer = printer with { PaxxUser = null, PaxxPassword = null, AccessCode = pass };
         } else printer = printer with { PaxxUser = null, PaxxPassword = null, AccessCode = apiKey };
-        if (_editingIndex >= 0) _printers[_editingIndex] = printer;
-        else { _printers.Add(printer); _editingIndex = _printers.Count - 1; }
+        if (targetIndex >= 0) _printers[targetIndex] = printer;
+        else { _printers.Add(printer); targetIndex = _printers.Count - 1; }
+        _editingIndex = targetIndex;
+        _loadedPrinter = printer;
         RefreshList();
         if (_editingIndex >= 0 && _editingIndex < _list.Items.Count) _list.Items[_editingIndex].Selected = true;
-        _status.Text = "Saved to disk.";
+        _status.Text = renamed ? $"Saved as '{name}'." : "Saved to disk.";
         return true;
     }
     private void DeleteSelected() {
         if (_list.SelectedIndices.Count == 0 || _list.SelectedIndices[0] >= _printers.Count) return;
         var p = _printers[_list.SelectedIndices[0]];
-        var answer = MessageBox.Show($"Delete printer '{p.Name}' from the bridge config? This does not touch the printer itself.", "C3D Print Bridge", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        var answer = MessageBox.Show($"Delete printer '{p.Name}' from this bridge only? This does not touch the printer itself, and it does NOT delete it from the dashboard — dashboard deletes come from the dashboard.", "C3D Print Bridge", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         if (answer != DialogResult.Yes) return;
+        var wasLoaded = _loadedPrinter == p;
         _printers.RemoveAt(_list.SelectedIndices[0]);
         _editingIndex = -1;
+        if (wasLoaded) { _loadedPrinter = null; if (_flyout.Visible) { _flyout.Visible = false; Width = Math.Max(MinimumSize.Width, Width - 360); Recenter(); } }
         ClearFields();
         RefreshList();
-        SaveToDisk();
-        _status.Text = "Deleted and saved to disk.";
+        // Local delete only: do NOT push to the dashboard, so a
+        // local delete can never remove a dashboard printer.
+        SaveToDisk(push: false);
+        _status.Text = "Deleted locally. Dashboard keeps it until deleted there.";
     }
     private async Task ScanAsync(Button scanBtn) {
         scanBtn.Enabled = false;
@@ -496,7 +609,7 @@ public sealed class ConfigureForm : Form
             }
             RefreshList();
             SaveToDisk();
-            _status.Text = added > 0 || updated > 0 || keysPulled > 0 ? $"Found {candidates.Count} port-open device(s). {added} new printer(s) added, {updated} known printer(s) moved to a new IP by MAC, {keysPulled} Moonraker API key(s) pulled automatically with no typing. Saved to disk. Use the blue Needs setup link for any printer still missing a login. Delete any that are not printers." : $"Found {candidates.Count} candidate(s), all already in the list. A port being open is not proof it is a printer.";
+            _status.Text = added > 0 || updated > 0 || keysPulled > 0 ? "Saved to disk." : "No new printers found.";
         } catch (Exception ex) { _status.Text = $"Scan failed: {ex.Message}"; }
         finally { scanBtn.Enabled = true; }
     }
@@ -531,7 +644,7 @@ public sealed class ConfigureForm : Form
             }
             RefreshList();
             SaveToDisk();
-            _status.Text = $"Pulled from dashboard: {added} new, {updated} updated. Saved to disk.";
+            _status.Text = "Pulled and saved.";
         } catch (Exception ex) { _status.Text = "Pull failed: " + ex.Message + ". Nothing changed locally."; }
         finally { btn.Enabled = true; }
     }
@@ -555,7 +668,7 @@ public sealed class ConfigureForm : Form
             Program.Log(res.IsSuccessStatusCode ? "Device config pushed to dashboard (encrypted there)." : "Device config push to dashboard failed: " + (int)res.StatusCode + " (local save still succeeded).");
         } catch (Exception ex) { Program.Log("Device config push to dashboard failed (local save still succeeded): " + ex.Message); }
     }
-    private void SaveToDisk() {
+    private void SaveToDisk(bool push = true) {
         // Auto-save: every change writes the whole config to disk
         // immediately. No dialog, no incomplete-printer popup — a
         // Bambu missing a Device ID or Access code simply stays
@@ -567,6 +680,10 @@ public sealed class ConfigureForm : Form
         var cfg = _initial with { Printers = _printers, DashboardBaseUrl = string.IsNullOrWhiteSpace(_target.Text) ? _initial.DashboardBaseUrl : _target.Text.Trim() };
         Config.Save(cfg);
         if (!string.IsNullOrWhiteSpace(_key.Text)) Config.StoreKey(_key.Text);
-        PushToDashboard();
+        // Push is the automatic dashboard update: every add or
+        // edit saved here is sent to the dashboard at once, with
+        // no manual Pull needed. Deletes pass push:false above,
+        // so they stay local-only.
+        if (push) PushToDashboard();
     }
 }
