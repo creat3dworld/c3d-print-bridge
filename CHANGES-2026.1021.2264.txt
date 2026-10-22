@@ -1,0 +1,32 @@
+C3D Print Bridge - version 2026.1021.2264
+Fixes for the bugs found testing 2263:
+
+- Configure selected and Needs setup work again. 2263 built
+  the flyout panel but never added it to the form, so opening
+  it did nothing at all and the slide-out was gone entirely.
+  The flyout is now added to the form's controls, so both
+  paths show it again.
+- Status text field removed from the button grid entirely,
+  per the user: no status update text in the lower-right
+  corner any more, and no status monitoring text there.
+  The list itself is the feedback now — a scanned or added
+  printer appears in the list.
+- Add printer button in that freed slot (row 2, right).
+  It opens a blank Configure flyout, so a printer Scan
+  misses can be added by hand by brand and IP, instead of
+  Scan being the only way to add one.
+- Scan WiFi now probes EVERY Up IPv4 network on the PC,
+  not just the first adapter. The old code picked the first
+  Up interface, so if that was a VPN, virtual, or Ethernet
+  adapter on a different subnet than the printers' WiFi,
+  Scan probed the wrong network and missed printers that
+  were right there. Duplicates across subnets are removed.
+  Note: Scan still only finds printers with an open Bambu
+  (8883) or Snapmaker (7125) port — a printer that is off,
+  asleep, or not in LAN mode will not be found by Scan, and
+  should be added with Add printer instead. Printers already
+  in the list are never removed by a Scan.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.

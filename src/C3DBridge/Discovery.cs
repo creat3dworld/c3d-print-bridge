@@ -31,35 +31,47 @@ public static class Discovery
     /// found or no LAN address exists; the caller reports that.</summary>
     public static async Task<List<Candidate>> ProbeCandidatesAsync()
     {
+        // Probe EVERY Up IPv4 /24 on this PC, not just the first
+        // interface. The old code picked the first Up adapter, so
+        // if that was a VPN, virtual, or Ethernet adapter on a
+        // different subnet than the printers' WiFi (10.0.0.x),
+        // Scan probed the wrong network and missed printers
+        // that were right there. Duplicates across subnets are
+        // de-duplicated by IP+port.
         var found = new List<Candidate>();
-        var local = LocalIpv4();
-        if (local is null) return found;
-
-        var bytes = local.GetAddressBytes();
-        var prefix = $"{bytes[0]}.{bytes[1]}.{bytes[2]}.";
+        var locals = LocalIpv4s();
+        if (locals.Count == 0) return found;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var tasks = new List<Task>();
         var gate = new SemaphoreSlim(64);
-        for (var host = 1; host <= 254; host++)
+        foreach (var local in locals)
         {
-            var ip = prefix + host;
-            if (ip == local.ToString()) continue;
-            foreach (var (port, kind) in new[] { (8883, "bambu"), (7125, "snapmaker") })
+            var bytes = local.GetAddressBytes();
+            var prefix = $"{bytes[0]}.{bytes[1]}.{bytes[2]}.";
+            for (var host = 1; host <= 254; host++)
             {
-                tasks.Add(Task.Run(async () =>
+                var ip = prefix + host;
+                if (ip == local.ToString()) continue;
+                foreach (var (port, kind) in new[] { (8883, "bambu"), (7125, "snapmaker") })
                 {
-                    await gate.WaitAsync();
-                    try
+                    var key = ip + ":" + port;
+                    lock (seen) { if (!seen.Add(key)) continue; }
+                    tasks.Add(Task.Run(async () =>
                     {
-                        using var tcp = new TcpClient();
-                        var connect = tcp.ConnectAsync(ip, port);
-                        if (await Task.WhenAny(connect, Task.Delay(400)) == connect && tcp.Connected)
+                        await gate.WaitAsync();
+                        try
                         {
-                            lock (found) { found.Add(new Candidate(ip, port, kind)); }
+                            using var tcp = new TcpClient();
+                            var connect = tcp.ConnectAsync(ip, port);
+                            if (await Task.WhenAny(connect, Task.Delay(400)) == connect && tcp.Connected)
+                            {
+                                lock (found) { found.Add(new Candidate(ip, port, kind)); }
+                            }
                         }
-                    }
-                    catch { /* unreachable: not a candidate */ }
-                    finally { gate.Release(); }
-                }));
+                        catch { /* unreachable: not a candidate */ }
+                        finally { gate.Release(); }
+                    }));
+                }
             }
         }
         await Task.WhenAll(tasks);
@@ -69,16 +81,19 @@ public static class Discovery
     public static async Task<List<string>> ProbeSubnetAsync()
     {
         var lines = new List<string>();
-        var local = LocalIpv4();
-        if (local is null)
+        var locals = LocalIpv4s();
+        if (locals.Count == 0)
         {
             lines.Add("Could not determine this PC's local IPv4 address; discovery needs a LAN address.");
             return lines;
         }
 
-        var bytes = local.GetAddressBytes();
-        var prefix = $"{bytes[0]}.{bytes[1]}.{bytes[2]}.";
-        lines.Add($"Probing {prefix}0/24 (this PC is {local}) — TCP connect to ports 8883 (Bambu) and 7125 (Moonraker), 400 ms timeout each.");
+        foreach (var local in locals)
+        {
+            var bytes = local.GetAddressBytes();
+            var prefix = $"{bytes[0]}.{bytes[1]}.{bytes[2]}.";
+            lines.Add($"Probing {prefix}0/24 (this PC is {local}) — TCP connect to ports 8883 (Bambu) and 7125 (Moonraker), 400 ms timeout each.");
+        }
 
         var found = await ProbeCandidatesAsync();
 
@@ -100,18 +115,24 @@ public static class Discovery
         return lines;
     }
 
-    private static IPAddress? LocalIpv4()
+    private static List<IPAddress> LocalIpv4s()
     {
+        var list = new List<IPAddress>();
         foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
         {
             if (ni.OperationalStatus != OperationalStatus.Up) continue;
             if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
             foreach (var addr in ni.GetIPProperties().UnicastAddresses)
             {
-                if (addr.Address.AddressFamily == AddressFamily.InterNetwork)
-                    return addr.Address;
+                if (addr.Address.AddressFamily == AddressFamily.InterNetwork && !list.Contains(addr.Address))
+                    list.Add(addr.Address);
             }
         }
-        return null;
+        return list;
+    }
+    private static IPAddress? LocalIpv4()
+    {
+        var list = LocalIpv4s();
+        return list.Count > 0 ? list[0] : null;
     }
 }

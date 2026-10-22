@@ -188,6 +188,9 @@ public sealed class ConfigureForm : Form
         _portHint.Dock = DockStyle.Fill; _portHint.AutoSize = false; _portHint.ForeColor = System.Drawing.Color.Gray;
         _portHintPanel.Controls.Add(_portHint);
         foreach (var pn in new Panel[] { _namePanel, _brandIpPanel, _deviceIdPanel, _loginUserPanel, _loginPassPanel, _apiKeyPanel, _keyPanel, _targetPanel, _portHintPanel }) _flyFlow.Controls.Add(pn);
+        // The flyout must be a child of the form, or it cannot
+        // show at all — 2263 built it but never added it here.
+        Controls.Add(_flyout);
 
         // Main list area (fills remaining space, scales with window).
         // No description label above the table: just the table.
@@ -260,10 +263,14 @@ public sealed class ConfigureForm : Form
         bridgeBtn.Click += (_, _) => OpenFlyoutBridge();
         var confBtn = new Button { Text = "Configure selected", Dock = DockStyle.Fill, Margin = new Padding(4) };
         confBtn.Click += (_, _) => { if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count) { _editingIndex = _list.SelectedIndices[0]; OpenFlyoutPrinter(_printers[_editingIndex]); } };
-        _status.AutoSize = false; _status.Dock = DockStyle.Fill; _status.Margin = new Padding(4);
-        _status.Text = "Scan only sees printers on this PC's own network. A found port is a candidate, not a confirmed printer.";
+        // No status text in the grid any more: the lower-right
+        // status field is removed entirely, per the user.
+        // Its slot becomes Add printer, so a printer Scan
+        // misses can still be added by hand by IP and brand.
+        var addBtn = new Button { Text = "Add printer", Dock = DockStyle.Fill, Margin = new Padding(4) };
+        addBtn.Click += (_, _) => { _editingIndex = -1; OpenFlyoutPrinter(null); };
         buttonGrid.Controls.Add(scanBtn, 0, 0); buttonGrid.Controls.Add(deleteBtn, 1, 0); buttonGrid.Controls.Add(pullBtn, 2, 0);
-        buttonGrid.Controls.Add(bridgeBtn, 0, 1); buttonGrid.Controls.Add(confBtn, 1, 1); buttonGrid.Controls.Add(_status, 2, 1);
+        buttonGrid.Controls.Add(bridgeBtn, 0, 1); buttonGrid.Controls.Add(confBtn, 1, 1); buttonGrid.Controls.Add(addBtn, 2, 1);
         buttonPanel.Controls.Add(buttonGrid);
         main.Controls.Add(buttonPanel);
         main.Resize += (_, _) => {
