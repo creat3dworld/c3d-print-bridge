@@ -58,8 +58,13 @@ public sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(selfTestItem);
         menu.Items.Add(updatesItem);
         menu.Items.Add(new ToolStripSeparator());
-        var uninstallItem = new ToolStripMenuItem("Uninstall…");
-        uninstallItem.Click += (_, _) => UninstallApp();
+        var repairItem = new ToolStripMenuItem("Repair and reinstall…");
+        repairItem.Click += (_, _) => UninstallApp("Uninstall-Repair-Reinstall.ps1",
+            "Repair and reinstall C3D Print Bridge? Your printer config and key are backed up to Desktop\\C3DBridge-backup first, then restored into the fresh install.");
+        menu.Items.Add(repairItem);
+        var uninstallItem = new ToolStripMenuItem("Uninstall (fresh start)…");
+        uninstallItem.Click += (_, _) => UninstallApp("Uninstall-C3DBridge.ps1",
+            "Fresh start? This removes ALL previous bridge registry entries and files, including your printers, key, and Desktop backup, and does NOT reinstall. Use Repair instead to keep your setup.");
         menu.Items.Add(uninstallItem);
         menu.Items.Add(exitItem);
         _icon.ContextMenuStrip = menu;
@@ -1744,27 +1749,27 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private void UninstallApp()
+    private void UninstallApp(string scriptName, string confirmMessage)
     {
         var result = MessageBox.Show(
-            "Uninstall C3D Print Bridge? This removes the Scheduled Task and the install folder.",
+            confirmMessage,
             "C3D Print Bridge", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         if (result != DialogResult.Yes) return;
         var parent = Directory.GetParent(Config.AppDir)?.FullName;
         string? script = null;
         if (parent is not null)
         {
-            var candidate = Path.Combine(parent, "Uninstall-C3DBridge.ps1");
+            var candidate = Path.Combine(parent, scriptName);
             if (File.Exists(candidate)) script = candidate;
             else
             {
-                var sourceCandidate = Path.Combine(parent, "source", "Uninstall-C3DBridge.ps1");
+                var sourceCandidate = Path.Combine(parent, "source", scriptName);
                 if (File.Exists(sourceCandidate)) script = sourceCandidate;
             }
         }
         if (script is null)
         {
-            MessageBox.Show("Uninstaller not found. Run Uninstall-C3DBridge.ps1 from the bridge repo instead.",
+            MessageBox.Show("Uninstaller not found. Run the uninstaller script from the bridge repo instead.",
                 "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
@@ -1772,8 +1777,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         // delete the running script itself.
         var tempScript = Path.Combine(Path.GetTempPath(), "C3DBridge-uninstall.ps1");
         File.Copy(script, tempScript, true);
+        var installRoot = parent ?? "C:\\C3D_Bridge";
+        var forceArg = scriptName == "Uninstall-C3DBridge.ps1" ? " -Force" : "";
         Process.Start(new ProcessStartInfo("powershell.exe",
-            $"-NoProfile -ExecutionPolicy Bypass -File \"{tempScript}\"")
+            $"-NoProfile -ExecutionPolicy Bypass -File \"{tempScript}\" -InstallDir \"{installRoot}\"{forceArg}")
         { UseShellExecute = false, CreateNoWindow = false });
         ExitApp();
     }

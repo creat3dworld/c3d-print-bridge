@@ -133,6 +133,7 @@ Write-Host 'Build OK.' -ForegroundColor Green
 Copy-Item (Join-Path $SourceDir 'SETUP.md') $InstallDir -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $SourceDir 'README.md') $InstallDir -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $SourceDir 'Uninstall-C3DBridge.ps1') $InstallDir -Force -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $SourceDir 'Uninstall-Repair-Reinstall.ps1') $InstallDir -Force -ErrorAction SilentlyContinue
 
 # --- 3. Config (example only — never overwrites a real config) ------
 # Migration to C:\C3D_Bridge: if this install has no config/key yet,

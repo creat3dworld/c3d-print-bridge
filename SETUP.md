@@ -1,6 +1,6 @@
 # C3D Print Bridge — setup guide for the shop PC
 
-If PowerShell says running scripts is disabled on this system, double-click `Enable-Scripts.bat` first (it runs `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force` for you), or run the installer via `Run-Installer.bat`, which already uses `-ExecutionPolicy Bypass`.
+Install in this order: first the .bat files, then the PowerShell installer. The easiest way is to double-click `Setup-Bridge.bat` — it enables scripts, then runs the installer, then finishes. If PowerShell says running scripts is disabled on this system, double-click `Enable-Scripts.bat` first (it runs `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force` for you), or run the installer via `Run-Installer.bat`, which already uses `-ExecutionPolicy Bypass`.
 
 Plain language, start to finish. The bridge is a small program that
 runs on the shop PC and relays between the home printers and the
