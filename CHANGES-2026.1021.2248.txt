@@ -1,0 +1,19 @@
+C3D Print Bridge - version 2026.1021.2248
+What is fixed in this version (vs 2026.1021.2236), from user report on Windows:
+- Bottom buttons no longer cut off: window is taller (560px), the
+  bottom Save/Cancel bar is taller, and Save/Cancel are positioned
+  from the panel width on resize instead of from a form-Width guess.
+  The main button rows now have a fixed, uncrowded footer area.
+- Needs setup is now a real link cue: blue, underlined text in the
+  Status column, and the list header says to click the blue link.
+  Clicking it still opens that printer's flyout.
+- Name column removed: it only duplicated the IP. The list is now
+  Type / IP address / Status. The Name box in the flyout is optional
+  (it is still kept internally for the dashboard, defaulting to IP).
+- Table columns now expand only to a cap, then long values show
+  with an ellipsis (…), except IP, which is never truncated and
+  gets a fixed 150px column wide enough for any IPv4 address.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.

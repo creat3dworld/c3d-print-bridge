@@ -77,15 +77,15 @@ public sealed class ConfigureForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         var wa = Screen.PrimaryScreen?.WorkingArea ?? new System.Drawing.Rectangle(0, 0, 840, 560);
         Width = Math.Min(680, wa.Width - 20);
-        Height = Math.Min(480, wa.Height - 20);
-        MinimumSize = new Size(560, 380);
+        Height = Math.Min(560, wa.Height - 20);
+        MinimumSize = new Size(560, 460);
         Left = wa.Left + Math.Max(0, (wa.Width - Width) / 2);
         Top = wa.Top + Math.Max(0, (wa.Height - Height) / 2);
 
         var accent = new Panel { Dock = DockStyle.Top, Height = 4, BackColor = System.Drawing.Color.FromArgb(0, 150, 136) };
         Controls.Add(accent);
 
-        var bottomPanel = new Panel { Dock = DockStyle.Bottom, Height = 48, Padding = new Padding(12) };
+        var bottomPanel = new Panel { Dock = DockStyle.Bottom, Height = 56, Padding = new Padding(12) };
         try {
             var logoBytes = Convert.FromBase64String(LogoPngBase64);
             using var logoStream = new System.IO.MemoryStream(logoBytes);
@@ -94,14 +94,14 @@ public sealed class ConfigureForm : Form
             logoBox.Click += (_, _) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://creat3dworld.com") { UseShellExecute = true }); } catch { } };
             bottomPanel.Controls.Add(logoBox);
         } catch { }
-        var saveHint = new Label { Text = "Save writes everything to disk. Click the logo to visit creat3dworld.com.", Left = 44, Top = 14, Width = 300 };
+        var saveHint = new Label { Text = "Save writes everything to disk. Click the logo to visit creat3dworld.com.", Left = 44, Top = 16, Width = 260 };
         bottomPanel.Controls.Add(saveHint);
-        var saveBtn = new Button { Text = "Save", Width = 100, Height = 30, Anchor = AnchorStyles.Top | AnchorStyles.Right, BackColor = System.Drawing.Color.FromArgb(0, 120, 215), ForeColor = System.Drawing.Color.White, FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false };
-        saveBtn.Left = Width - 230; saveBtn.Top = 9;
+        var saveBtn = new Button { Text = "Save", Width = 100, Height = 32, Anchor = AnchorStyles.Top, BackColor = System.Drawing.Color.FromArgb(0, 120, 215), ForeColor = System.Drawing.Color.White, FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false };
+        saveBtn.Left = 0; saveBtn.Top = 12;
         saveBtn.Click += (_, _) => SaveAndClose();
         bottomPanel.Controls.Add(saveBtn);
-        var cancelBtn = new Button { Text = "Cancel", Width = 100, Height = 30, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-        cancelBtn.Left = Width - 120; cancelBtn.Top = 9;
+        var cancelBtn = new Button { Text = "Cancel", Width = 100, Height = 32, Anchor = AnchorStyles.Top };
+        cancelBtn.Left = 0; cancelBtn.Top = 12;
         cancelBtn.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         bottomPanel.Controls.Add(cancelBtn);
         bottomPanel.Resize += (_, _) => { saveBtn.Left = bottomPanel.Width - 230; cancelBtn.Left = bottomPanel.Width - 120; };
@@ -123,16 +123,15 @@ public sealed class ConfigureForm : Form
 
         // Main list area (fills remaining space, scales with window)
         var main = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12) };
-        var listLabel = new Label { Text = "Printers — click Needs Setup to configure that printer", Left = 0, Top = 0, Width = 600, Height = 18 };
+        var listLabel = new Label { Text = "Printers — click the blue Needs setup link to configure that printer", Left = 0, Top = 0, Width = 600, Height = 18 };
         main.Controls.Add(listLabel);
         _list.View = View.Details;
         _list.FullRowSelect = true;
         _list.GridLines = true;
         _list.MultiSelect = false;
-        _list.Columns.Add("Name", 140);
-        _list.Columns.Add("Type", 90);
+        _list.Columns.Add("Type", 120);
         _list.Columns.Add("IP address", 150);
-        _list.Columns.Add("Status", 110);
+        _list.Columns.Add("Status", 130);
         _list.Left = 0; _list.Top = 22;
         _list.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         _list.SelectedIndexChanged += (_, _) => { if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count) _editingIndex = _list.SelectedIndices[0]; };
@@ -140,13 +139,13 @@ public sealed class ConfigureForm : Form
             var hit = _list.HitTest(e.Location);
             if (hit.Item != null && hit.SubItem != null) {
                 var col = hit.Item.SubItems.IndexOf(hit.SubItem);
-                if (col == 3 && hit.SubItem.Text == "Needs Setup" && hit.Item.Index < _printers.Count) { _editingIndex = hit.Item.Index; OpenFlyoutPrinter(_printers[_editingIndex]); }
-                else if (col == 2) { var ip = _printers[hit.Item.Index].Ip; if (!string.IsNullOrWhiteSpace(ip)) { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("http://" + ip.Trim()) { UseShellExecute = true }); } catch { } } }
+                if (col == 2 && hit.SubItem.Text == "Needs setup" && hit.Item.Index < _printers.Count) { _editingIndex = hit.Item.Index; OpenFlyoutPrinter(_printers[_editingIndex]); }
+                else if (col == 1) { var ip = _printers[hit.Item.Index].Ip; if (!string.IsNullOrWhiteSpace(ip)) { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("http://" + ip.Trim()) { UseShellExecute = true }); } catch { } } }
             }
         };
         _list.MouseDoubleClick += (_, e) => {
             var hit = _list.HitTest(e.Location);
-            if (hit.Item != null && hit.Item.Index < _printers.Count && hit.SubItem != null && hit.Item.SubItems.IndexOf(hit.SubItem) != 2) { _editingIndex = hit.Item.Index; OpenFlyoutPrinter(_printers[_editingIndex]); }
+            if (hit.Item != null && hit.Item.Index < _printers.Count && hit.SubItem != null && hit.Item.SubItems.IndexOf(hit.SubItem) != 1) { _editingIndex = hit.Item.Index; OpenFlyoutPrinter(_printers[_editingIndex]); }
         };
         _list.Resize += (_, _) => ScaleColumns();
         main.Controls.Add(_list);
@@ -168,19 +167,19 @@ public sealed class ConfigureForm : Form
         var confBtn = new Button { Text = "Configure selected", Left = 160, Top = 336, Width = 152, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
         confBtn.Click += (_, _) => { if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count) { _editingIndex = _list.SelectedIndices[0]; OpenFlyoutPrinter(_printers[_editingIndex]); } };
         main.Controls.Add(confBtn);
-        _status.Left = 320; _status.Top = 336; _status.Width = 320; _status.Height = 40; _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        _status.Left = 320; _status.Top = 336; _status.Width = 320; _status.Height = 36; _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         _status.Text = "Scan only sees printers on this PC's own network. A found port is a candidate, not a confirmed printer.";
         main.Controls.Add(_status);
         main.Resize += (_, _) => {
             _list.Width = main.ClientSize.Width - 24;
-            _list.Height = Math.Max(120, main.ClientSize.Height - 150);
+            _list.Height = Math.Max(120, main.ClientSize.Height - 170);
             foreach (Control c in main.Controls) { if (c is Button b && b.Top >= 300) { /* buttons stay anchored bottom via Anchor, Top set on first layout below */ } }
-            scanBtn.Top = main.ClientSize.Height - 92; deleteBtn.Top = scanBtn.Top; openBtn.Top = scanBtn.Top; pullBtn.Top = scanBtn.Top;
-            bridgeBtn.Top = main.ClientSize.Height - 56; confBtn.Top = bridgeBtn.Top; _status.Top = bridgeBtn.Top;
+            scanBtn.Top = main.ClientSize.Height - 104; deleteBtn.Top = scanBtn.Top; openBtn.Top = scanBtn.Top; pullBtn.Top = scanBtn.Top;
+            bridgeBtn.Top = main.ClientSize.Height - 68; confBtn.Top = bridgeBtn.Top; _status.Top = bridgeBtn.Top;
         };
         Controls.Add(main);
         // Flyout fields (created once, laid out by LayoutFlyout)
-        _nameLabel.Text = "Name"; _typeLabel.Text = "Type / brand"; _ipLabel.Text = "IP address";
+        _nameLabel.Text = "Name (optional — list shows Type + IP)"; _typeLabel.Text = "Type / brand"; _ipLabel.Text = "IP address";
         _deviceIdLabel.Text = "Device ID"; _loginUserLabel.Text = "Username"; _loginPassLabel.Text = "Password";
         _type.DropDownStyle = ComboBoxStyle.DropDown; _type.Items.Add("bambu"); _type.Items.Add("snapmaker"); _type.Items.Add("other");
         _type.TextChanged += (_, _) => UpdateLoginVisibility();
@@ -209,12 +208,19 @@ public sealed class ConfigureForm : Form
     private List<Control> _bridgeControls = new();
     private const string LogoPngBase64 = "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";
     private void ScaleColumns() {
-        if (_list.Columns.Count < 4 || _list.ClientSize.Width <= 0) return;
+        if (_list.Columns.Count < 3 || _list.ClientSize.Width <= 0) return;
+        // Columns grow with the window only up to a cap, then stop:
+        // long values are shown truncated with an ellipsis in
+        // RefreshList, except IP, which is never truncated and gets
+        // a fixed width wide enough for any IPv4 address.
         var w = _list.ClientSize.Width;
-        _list.Columns[0].Width = Math.Max(80, w * 28 / 100);
-        _list.Columns[1].Width = Math.Max(70, w * 18 / 100);
-        _list.Columns[2].Width = Math.Max(90, w * 30 / 100);
-        _list.Columns[3].Width = Math.Max(80, w - _list.Columns[0].Width - _list.Columns[1].Width - _list.Columns[2].Width);
+        _list.Columns[0].Width = Math.Min(160, Math.Max(90, w * 22 / 100));
+        _list.Columns[1].Width = 150;
+        _list.Columns[2].Width = Math.Min(170, Math.Max(110, w * 25 / 100));
+    }
+    private static string Ellipsis(string s, int maxChars) {
+        if (string.IsNullOrEmpty(s) || s.Length <= maxChars) return s;
+        return s[..Math.Max(1, maxChars - 1)] + "…";
     }
     private void OpenFlyoutPrinter(PrinterConfig? pr) {
         _flyoutPrinterMode = true;
@@ -313,13 +319,12 @@ public sealed class ConfigureForm : Form
         int selected = _list.SelectedIndices.Count > 0 ? _list.SelectedIndices[0] : -1;
         _list.Items.Clear();
         foreach (var p in _printers) {
-            var name = string.IsNullOrWhiteSpace(p.Name) ? p.Ip : p.Name;
             var ready = IsReady(p);
-            var item = new ListViewItem(name);
-            item.SubItems.Add(p.Type);
-            item.SubItems.Add(p.Ip);
+            var item = new ListViewItem(Ellipsis(p.Type ?? "", 18));
+            item.SubItems.Add(p.Ip ?? "");
             var statusItem = new ListViewItem.ListViewSubItem(item, ready ? "Ready" : "Needs setup");
-            statusItem.ForeColor = ready ? System.Drawing.Color.FromArgb(0, 128, 0) : System.Drawing.Color.FromArgb(200, 110, 0);
+            if (ready) { statusItem.ForeColor = System.Drawing.Color.FromArgb(0, 128, 0); }
+            else { statusItem.ForeColor = System.Drawing.Color.Blue; statusItem.Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Underline); }
             item.SubItems.Add(statusItem);
             _list.Items.Add(item);
         }
@@ -347,8 +352,8 @@ public sealed class ConfigureForm : Form
         var name = _name.Text.Trim();
         var type = (_type.Text ?? "").Trim().ToLowerInvariant();
         var ip = _ip.Text.Trim();
-        if (string.IsNullOrWhiteSpace(name)) { MessageBox.Show("Give the printer a name first.", "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning); return false; }
         if (string.IsNullOrWhiteSpace(ip)) { MessageBox.Show("Fill in the printer's IP address first.", "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning); return false; }
+        if (string.IsNullOrWhiteSpace(name)) name = ip; // internal only; the list shows Type + IP, never a duplicate Name column
         if (string.IsNullOrWhiteSpace(type)) { MessageBox.Show("Pick or type a brand / firmware type first.", "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning); return false; }
         for (var i = 0; i < _printers.Count; i++) {
             if (i != _editingIndex && string.Equals(_printers[i].Name, name, StringComparison.OrdinalIgnoreCase)) { MessageBox.Show($"A printer named '{name}' is already in the list. Names must be unique.", "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning); return false; }
@@ -415,7 +420,7 @@ public sealed class ConfigureForm : Form
                 }
             }
             RefreshList();
-            _status.Text = added > 0 || updated > 0 || keysPulled > 0 ? $"Found {candidates.Count} port-open device(s). {added} new printer(s) added, named by their IP, {updated} known printer(s) moved to a new IP by MAC, {keysPulled} Moonraker API key(s) pulled automatically with no typing. Click Save to keep them, or Needs Setup for any printer still missing a login. Delete any that are not printers." : $"Found {candidates.Count} candidate(s), all already in the list. A port being open is not proof it is a printer.";
+            _status.Text = added > 0 || updated > 0 || keysPulled > 0 ? $"Found {candidates.Count} port-open device(s). {added} new printer(s) added, {updated} known printer(s) moved to a new IP by MAC, {keysPulled} Moonraker API key(s) pulled automatically with no typing. Click Save to keep them, or the blue Needs setup link for any printer still missing a login. Delete any that are not printers." : $"Found {candidates.Count} candidate(s), all already in the list. A port being open is not proof it is a printer.";
         } catch (Exception ex) { _status.Text = $"Scan failed: {ex.Message}"; }
         finally { scanBtn.Enabled = true; }
     }
