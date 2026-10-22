@@ -108,7 +108,7 @@ public sealed class BambuAdapter : IPrinterAdapter
                 RemainingSeconds = remaining,
                 Detail = detail,
                 Ams = ParseAms(print),
-                CameraAvailable = _cfg.Camera && !string.IsNullOrWhiteSpace(_cfg.SnapshotUrl),
+                CameraAvailable = _cfg.Camera, // camera_available means the printer HAS a camera, not that a still URL is configured; snapshot fetching still needs SnapshotUrl separately
             };
         }
         catch (Exception ex)

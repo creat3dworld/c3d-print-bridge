@@ -195,7 +195,7 @@ public sealed class ConfigureForm : Form
         _loginPass.UseSystemPasswordChar = true;
         _key.UseSystemPasswordChar = true;
         _showPass.Text = "Show password"; _showPass.CheckedChanged += (_, _) => { _loginPass.UseSystemPasswordChar = !_showPass.Checked; _key.UseSystemPasswordChar = !_showPass.Checked; };
-        _camera.Text = "Has camera"; _camera.Checked = true;
+        _camera.Text = "Camera enabled"; _camera.Checked = true;
         _target.Text = _initial.DashboardBaseUrl;
         _target.TextChanged += (_, _) => UpdatePortHint();
         UpdatePortHint();

@@ -162,7 +162,7 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
                     Known = false,
                     Detail = "U1 filament data is not exposed by a verified Moonraker endpoint; AMS is unverifiable.",
                 },
-                CameraAvailable = _cfg.Camera && !string.IsNullOrWhiteSpace(_cfg.SnapshotUrl),
+                CameraAvailable = _cfg.Camera, // camera_available means the printer HAS a camera, not that a still URL is configured; snapshot fetching still needs SnapshotUrl separately
             };
         }
         catch (Exception ex)

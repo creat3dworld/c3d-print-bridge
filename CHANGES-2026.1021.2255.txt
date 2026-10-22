@@ -1,0 +1,16 @@
+C3D Print Bridge - version 2026.1021.2255
+Camera fix (vs 2026.1021.2252):
+- "Has camera" was doing nothing: camera_available was only true
+  when a snapshot URL was also set, and the UI never sets a
+  snapshot URL, so it was always false no matter what the box said.
+- Fixed: camera_available now follows the Camera flag directly.
+  All printers have cameras by default (box checked), and
+  unchecking it actually disables camera reporting for that printer.
+- Box relabeled "Camera enabled" to say what it does.
+- Note: a still snapshot still needs a snapshot URL to fetch an
+  image; camera_available alone means the printer has a camera,
+  not that a still image is currently fetchable.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.
