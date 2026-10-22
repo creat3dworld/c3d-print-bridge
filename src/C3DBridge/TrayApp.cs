@@ -71,6 +71,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _icon.DoubleClick += (_, _) => ShowConfigure();
 
         StartWorker();
+        SleepPreventer.Prevent();
     }
 
     // Creat3d World logo (rounded logo) as the tray + application icon.
@@ -1794,6 +1795,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _exitRequested = true;
         try { _workerCts?.Cancel(); } catch { /* best effort */ }
+        SleepPreventer.Allow();
         _icon.Visible = false;
         _icon.Dispose();
         Application.Exit();

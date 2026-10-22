@@ -33,7 +33,7 @@ namespace C3DBridge;
 
 public static class Program
 {
-    public const string Version = "2026.1021.2105";
+    public const string Version = "2026.1021.2120";
 
     // Single-instance, newest-wins: only one bridge runs at a time.
     // A running instance writes its version + pid to a temp file.
@@ -224,7 +224,9 @@ public static class Program
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
         Log("C3D Print Bridge starting. Press Ctrl+C to stop.");
+        SleepPreventer.Prevent();
         await new Worker(cfg, registry, dashboard).RunAsync(cts.Token);
+        SleepPreventer.Allow();
         Log("C3D Print Bridge stopped.");
         return 0;
     }
