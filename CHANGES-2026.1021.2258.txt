@@ -1,0 +1,13 @@
+C3D Print Bridge - version 2026.1021.2258
+Link-color fix (vs 2026.1021.2255):
+- The table header said "click the blue IP", but the IP was not
+  blue: WinForms ListView ignores subitem colors/fonts unless
+  UseItemStyleForSubItems is false on each row, and it was left at
+  its default (true). That also silently broke the blue Needs
+  setup link color/underline.
+- Fixed: every row now sets UseItemStyleForSubItems = false, so
+  the IP and Needs setup links actually render blue and underlined.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.

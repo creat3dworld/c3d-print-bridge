@@ -340,6 +340,10 @@ public sealed class ConfigureForm : Form
         foreach (var p in _printers) {
             var ready = IsReady(p);
             var item = new ListViewItem(Ellipsis(p.Type ?? "", 18));
+            // Without this, WinForms ignores every subitem ForeColor/Font
+            // and paints all columns in the item's own style — which is
+            // why the blue IP / blue Needs setup links never looked blue.
+            item.UseItemStyleForSubItems = false;
             var ipItem = new ListViewItem.ListViewSubItem(item, p.Ip ?? "");
             ipItem.ForeColor = System.Drawing.Color.Blue;
             ipItem.Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Underline);
