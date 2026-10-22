@@ -3,8 +3,9 @@
 // SECURITY RULES (owner-confirmed, Oct 20, 2026):
 // - The bridge API key is NEVER in this repo, NEVER in code, and
 //   NEVER in bridge-config.json. It lives in ONE restricted local
-//   file on the PC (bridge-key.txt), created by setup, readable
-//   only by the current user where the OS supports it.
+//   file on the PC (bridge-key.txt), created by setup, encrypted
+//   with Windows DPAPI (current user only) where supported, so the
+//   file on disk is ciphertext, not the plain key.
 // - Printer LAN access codes live ONLY in the local config file.
 // - The example config shipped in the repo contains placeholders
 //   only and must never be copied over a real config.
@@ -42,6 +43,7 @@ public static class Config
             var json = File.ReadAllText(ConfigPath);
             var cfg = JsonSerializer.Deserialize<BridgeConfig>(json, JsonOptions);
             if (cfg is null) return (null, "Config file parsed to nothing; it is empty or invalid JSON.");
+            cfg = cfg with { Printers = cfg.Printers.Select(pr => pr with { AccessCode = SecureStore.Unprotect(pr.AccessCode), PaxxPassword = SecureStore.Unprotect(pr.PaxxPassword) }).ToList() };
             if (string.IsNullOrWhiteSpace(cfg.DashboardBaseUrl)) return (null, "Config is missing dashboard_base_url.");
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var p in cfg.Printers)
@@ -66,7 +68,8 @@ public static class Config
     /// the separate bridge-key file.</summary>
     public static void Save(BridgeConfig cfg)
     {
-        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(cfg, JsonOptions));
+        var safe = cfg with { Printers = cfg.Printers.Select(pr => pr with { AccessCode = string.IsNullOrWhiteSpace(pr.AccessCode) ? pr.AccessCode : SecureStore.Protect(pr.AccessCode), PaxxPassword = string.IsNullOrWhiteSpace(pr.PaxxPassword) ? pr.PaxxPassword : SecureStore.Protect(pr.PaxxPassword) }).ToList() };
+        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(safe, JsonOptions));
         RestrictFile(ConfigPath);
     }
 
@@ -93,7 +96,7 @@ public static class Config
     /// local key file. Overwrites any previous key (rotation).</summary>
     public static void StoreKey(string key)
     {
-        File.WriteAllText(KeyPath, key.Trim() + Environment.NewLine);
+        File.WriteAllText(KeyPath, SecureStore.Protect(key.Trim()) + Environment.NewLine);
         RestrictFile(KeyPath);
     }
 
@@ -102,7 +105,12 @@ public static class Config
     public static string? ReadKey()
     {
         if (!File.Exists(KeyPath)) return null;
-        var key = File.ReadAllText(KeyPath).Trim();
+        var raw = File.ReadAllText(KeyPath).Trim();
+        var key = SecureStore.Unprotect(raw);
+        if (!string.IsNullOrEmpty(key) && !raw.StartsWith("dpapi:", StringComparison.Ordinal) && OperatingSystem.IsWindows())
+        {
+            try { StoreKey(key); } catch { }
+        }
         return string.IsNullOrEmpty(key) ? null : key;
     }
 
