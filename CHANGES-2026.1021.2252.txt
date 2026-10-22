@@ -1,0 +1,27 @@
+C3D Print Bridge - version 2026.1021.2252
+Includes all of 2026.1021.2248 (taller window, bottom buttons not
+cut off, Needs setup as a blue link, Name column removed, column
+caps with ellipsis except IP) plus the flyout fixes below:
+- Flyout no longer flies off-screen: opening it recenters the
+  whole window on the working area, and closing it recenters again.
+  Focus goes straight to the first field when the flyout opens.
+- Flyout fields are no longer smashed together: 48px steps with
+  18px labels and 26px boxes throughout, including Bridge settings.
+- Bambu hint no longer mentions Username at all (the field is
+  hidden for Bambu, so the note was confusing). It now just says
+  Device ID + Access code from the printer screen.
+- Show-password is hidden for Bambu (it was reported as doing
+  nothing there); it still shows for Snapmaker and other brands.
+- Apply to list and Add new buttons removed from the flyout:
+  closing the flyout (X) now applies the fields to the list, and
+  main Save still writes to disk. Printers are added by Scan.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.
+- IP click fixed: clicking the IP column now always opens the
+  printer in a browser, whether the flyout is open or closed, and
+  never opens setup. The column is worked out from the click X
+  position and the real column widths, not from HitTest, which
+  could report the wrong column after a resize/flyout. IP text is
+  now blue and underlined, like the Needs setup link.
