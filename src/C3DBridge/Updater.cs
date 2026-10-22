@@ -54,15 +54,16 @@ public static class Updater
     private static string RawUrl =>
         $"https://raw.githubusercontent.com/{RepoOwner}/{RepoName}/{Branch}/src/C3DBridge/Program.cs";
 
-    // Version scheme (Oct 21, 2026): DDMMYYYYHHMM, 24-hour, to the minute
-    // (e.g. 211020261941 = Oct 21, 2026, 19:41). Old dotted versions
-    // (1.1.0 etc.) are still parsed, and any DDMMYYYYHHMM version is
-    // treated as newer than any dotted version.
+    // Version scheme (Oct 21, 2026): YYYY.MMDD.HHMM, 24-hour, to the minute.
+    // If two revisions land within the same minute, append .# to the
+    // end (e.g. 2026.1021.2258.1, then .2) so each push is a distinct,
+    // newer version. Old dotted versions (1.1.0 etc.) are still parsed,
+    // and any DDMMYYYYHHMM version is treated as newer than any dotted version.
     private static string? ParseVersion(string programCs)
     {
         var m = Regex.Match(programCs, @"Version\s*=\s*""(\d{12})""");
         if (m.Success) return m.Groups[1].Value;
-        m = Regex.Match(programCs, @"Version\s*=\s*""(\d+\.\d+\.\d+)""");
+        m = Regex.Match(programCs, @"Version\s*=\s*""(\d+\.\d+\.\d+(?:\.\d+)?)""");
         return m.Success ? m.Groups[1].Value : null;
     }
 

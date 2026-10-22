@@ -1,0 +1,20 @@
+C3D Print Bridge - version 2026.1021.2259
+Scaling / readability fix (vs 2026.1021.2258):
+- App is now PerMonitorV2 DPI-aware (csproj ApplicationHighDpiMode),
+  so Windows renders it natively at the monitor's Scale/Zoom
+  instead of bitmap-scaling (blurring) the whole window. That was
+  why bottom buttons were unreadable at Zoom.
+- Base font raised Segoe UI 9 -> 10, window taller (600px),
+  bottom bar taller (68px), Save/Cancel 110x38, main buttons
+  152x34 with a larger footer area, so scaled button text is
+  never clipped.
+- Version rule (new, from user): if two revisions land within
+  the same minute, the later one gets a .# suffix (e.g.
+  2026.1021.2259.1). The updater and the single-instance version
+  check were both fixed to parse and compare that suffix
+  correctly (previously the updater would have ignored .1 and
+  called it up to date).
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.

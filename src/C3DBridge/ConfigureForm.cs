@@ -71,21 +71,21 @@ public sealed class ConfigureForm : Form
 
         Text = "C3D Print Bridge — Configure";
         AutoScaleMode = AutoScaleMode.Dpi;
-        Font = new System.Drawing.Font("Segoe UI", 9);
+        Font = new System.Drawing.Font("Segoe UI", 10);
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
         StartPosition = FormStartPosition.CenterScreen;
         var wa = Screen.PrimaryScreen?.WorkingArea ?? new System.Drawing.Rectangle(0, 0, 840, 560);
         Width = Math.Min(680, wa.Width - 20);
-        Height = Math.Min(560, wa.Height - 20);
-        MinimumSize = new Size(560, 460);
+        Height = Math.Min(600, wa.Height - 20);
+        MinimumSize = new Size(600, 500);
         Left = wa.Left + Math.Max(0, (wa.Width - Width) / 2);
         Top = wa.Top + Math.Max(0, (wa.Height - Height) / 2);
 
         var accent = new Panel { Dock = DockStyle.Top, Height = 4, BackColor = System.Drawing.Color.FromArgb(0, 150, 136) };
         Controls.Add(accent);
 
-        var bottomPanel = new Panel { Dock = DockStyle.Bottom, Height = 56, Padding = new Padding(12) };
+        var bottomPanel = new Panel { Dock = DockStyle.Bottom, Height = 68, Padding = new Padding(12) };
         try {
             var logoBytes = Convert.FromBase64String(LogoPngBase64);
             using var logoStream = new System.IO.MemoryStream(logoBytes);
@@ -94,17 +94,17 @@ public sealed class ConfigureForm : Form
             logoBox.Click += (_, _) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://creat3dworld.com") { UseShellExecute = true }); } catch { } };
             bottomPanel.Controls.Add(logoBox);
         } catch { }
-        var saveHint = new Label { Text = "Save writes everything to disk. Click the logo to visit creat3dworld.com.", Left = 44, Top = 16, Width = 260 };
+        var saveHint = new Label { Text = "Save writes everything to disk. Click the logo to visit creat3dworld.com.", Left = 44, Top = 20, Width = 260 };
         bottomPanel.Controls.Add(saveHint);
-        var saveBtn = new Button { Text = "Save", Width = 100, Height = 32, Anchor = AnchorStyles.Top, BackColor = System.Drawing.Color.FromArgb(0, 120, 215), ForeColor = System.Drawing.Color.White, FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false };
-        saveBtn.Left = 0; saveBtn.Top = 12;
+        var saveBtn = new Button { Text = "Save", Width = 110, Height = 38, Anchor = AnchorStyles.Top, BackColor = System.Drawing.Color.FromArgb(0, 120, 215), ForeColor = System.Drawing.Color.White, FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false };
+        saveBtn.Left = 0; saveBtn.Top = 14;
         saveBtn.Click += (_, _) => SaveAndClose();
         bottomPanel.Controls.Add(saveBtn);
-        var cancelBtn = new Button { Text = "Cancel", Width = 100, Height = 32, Anchor = AnchorStyles.Top };
-        cancelBtn.Left = 0; cancelBtn.Top = 12;
+        var cancelBtn = new Button { Text = "Cancel", Width = 110, Height = 38, Anchor = AnchorStyles.Top };
+        cancelBtn.Left = 0; cancelBtn.Top = 14;
         cancelBtn.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         bottomPanel.Controls.Add(cancelBtn);
-        bottomPanel.Resize += (_, _) => { saveBtn.Left = bottomPanel.Width - 230; cancelBtn.Left = bottomPanel.Width - 120; };
+        bottomPanel.Resize += (_, _) => { saveBtn.Left = bottomPanel.Width - 250; cancelBtn.Left = bottomPanel.Width - 130; };
         Controls.Add(bottomPanel);
 
         // Flyout (right, hidden by default)
@@ -158,33 +158,33 @@ public sealed class ConfigureForm : Form
         };
         _list.Resize += (_, _) => ScaleColumns();
         main.Controls.Add(_list);
-        var scanBtn = new Button { Text = "Scan WiFi", Left = 0, Top = 300, Width = 152, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        var scanBtn = new Button { Text = "Scan WiFi", Left = 0, Top = 300, Width = 152, Height = 34, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
         scanBtn.Click += async (_, _) => await ScanAsync(scanBtn);
         main.Controls.Add(scanBtn);
-        var deleteBtn = new Button { Text = "Delete selected", Left = 160, Top = 300, Width = 152, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        var deleteBtn = new Button { Text = "Delete selected", Left = 160, Top = 300, Width = 152, Height = 34, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
         deleteBtn.Click += (_, _) => DeleteSelected();
         main.Controls.Add(deleteBtn);
-        var openBtn = new Button { Text = "Open IP in browser", Left = 320, Top = 300, Width = 152, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        var openBtn = new Button { Text = "Open IP in browser", Left = 320, Top = 300, Width = 152, Height = 34, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
         openBtn.Click += (_, _) => { if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count) { var ip = _printers[_list.SelectedIndices[0]].Ip; if (!string.IsNullOrWhiteSpace(ip)) { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("http://" + ip.Trim()) { UseShellExecute = true }); } catch { } } } };
         main.Controls.Add(openBtn);
-        var pullBtn = new Button { Text = "Pull from dashboard", Left = 480, Top = 300, Width = 152, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        var pullBtn = new Button { Text = "Pull from dashboard", Left = 480, Top = 300, Width = 152, Height = 34, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
         pullBtn.Click += async (_, _) => await PullFromDashboardAsync(pullBtn);
         main.Controls.Add(pullBtn);
-        var bridgeBtn = new Button { Text = "Bridge settings", Left = 0, Top = 336, Width = 152, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        var bridgeBtn = new Button { Text = "Bridge settings", Left = 0, Top = 336, Width = 152, Height = 34, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
         bridgeBtn.Click += (_, _) => OpenFlyoutBridge();
         main.Controls.Add(bridgeBtn);
-        var confBtn = new Button { Text = "Configure selected", Left = 160, Top = 336, Width = 152, Height = 28, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
+        var confBtn = new Button { Text = "Configure selected", Left = 160, Top = 336, Width = 152, Height = 34, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
         confBtn.Click += (_, _) => { if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count) { _editingIndex = _list.SelectedIndices[0]; OpenFlyoutPrinter(_printers[_editingIndex]); } };
         main.Controls.Add(confBtn);
-        _status.Left = 320; _status.Top = 336; _status.Width = 320; _status.Height = 36; _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        _status.Left = 320; _status.Top = 336; _status.Width = 320; _status.Height = 38; _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         _status.Text = "Scan only sees printers on this PC's own network. A found port is a candidate, not a confirmed printer.";
         main.Controls.Add(_status);
         main.Resize += (_, _) => {
             _list.Width = main.ClientSize.Width - 24;
-            _list.Height = Math.Max(120, main.ClientSize.Height - 170);
+            _list.Height = Math.Max(120, main.ClientSize.Height - 182);
             foreach (Control c in main.Controls) { if (c is Button b && b.Top >= 300) { /* buttons stay anchored bottom via Anchor, Top set on first layout below */ } }
-            scanBtn.Top = main.ClientSize.Height - 104; deleteBtn.Top = scanBtn.Top; openBtn.Top = scanBtn.Top; pullBtn.Top = scanBtn.Top;
-            bridgeBtn.Top = main.ClientSize.Height - 68; confBtn.Top = bridgeBtn.Top; _status.Top = bridgeBtn.Top;
+            scanBtn.Top = main.ClientSize.Height - 112; deleteBtn.Top = scanBtn.Top; openBtn.Top = scanBtn.Top; pullBtn.Top = scanBtn.Top;
+            bridgeBtn.Top = main.ClientSize.Height - 72; confBtn.Top = bridgeBtn.Top; _status.Top = bridgeBtn.Top;
         };
         Controls.Add(main);
         // Flyout fields (created once, laid out by LayoutFlyout)
@@ -273,17 +273,17 @@ public sealed class ConfigureForm : Form
         // 48px steps: 18px label + 26px box + 4px gap, so fields are
         // never smashed into each other.
         _nameLabel.Left = 12; _nameLabel.Top = 36; _nameLabel.Width = 320; _nameLabel.Height = 18;
-        _name.Left = 12; _name.Top = 54; _name.Width = 320; _name.Height = 26;
+        _name.Left = 12; _name.Top = 54; _name.Width = 320; _name.Height = 28;
         _typeLabel.Left = 12; _typeLabel.Top = 84; _typeLabel.Width = 320; _typeLabel.Height = 18;
-        _type.Left = 12; _type.Top = 102; _type.Width = 320; _type.Height = 26;
+        _type.Left = 12; _type.Top = 102; _type.Width = 320; _type.Height = 28;
         _ipLabel.Left = 12; _ipLabel.Top = 132; _ipLabel.Width = 320; _ipLabel.Height = 18;
-        _ip.Left = 12; _ip.Top = 150; _ip.Width = 320; _ip.Height = 26;
+        _ip.Left = 12; _ip.Top = 150; _ip.Width = 320; _ip.Height = 28;
         _macLabel.Left = 12; _macLabel.Top = 180; _macLabel.Width = 320; _macLabel.Height = 18; _macLabel.ForeColor = System.Drawing.Color.Gray;
         int t = 202;
         foreach (var pair in new (Label, Control)[] { (_deviceIdLabel, _deviceId), (_loginUserLabel, _loginUser), (_loginPassLabel, _loginPass) }) {
             if (!pair.Item1.Visible) continue;
             pair.Item1.Left = 12; pair.Item1.Top = t; pair.Item1.Width = 320; pair.Item1.Height = 18;
-            pair.Item2.Left = 12; pair.Item2.Top = t + 18; pair.Item2.Width = 320; pair.Item2.Height = 26;
+            pair.Item2.Left = 12; pair.Item2.Top = t + 18; pair.Item2.Width = 320; pair.Item2.Height = 28;
             t += 48;
         }
         _loginHint.Left = 12; _loginHint.Top = t; _loginHint.Width = 320; _loginHint.Height = 36; _loginHint.ForeColor = System.Drawing.Color.Gray;

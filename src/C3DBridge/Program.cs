@@ -33,7 +33,7 @@ namespace C3DBridge;
 
 public static class Program
 {
-    public const string Version = "2026.1021.2258";
+    public const string Version = "2026.1021.2259";
 
     // Single-instance, newest-wins: only one bridge runs at a time.
     // A running instance writes its version + pid to a temp file.
@@ -45,10 +45,13 @@ public static class Program
     private static string RunningFilePath => Path.Combine(Path.GetTempPath(), "C3DBridge-running.json");
     private static string SortableVersion(string v)
     {
-        // Current format is YYYY.MMDD.HHMM (dotted, zero-padded).
+        // Current format is YYYY.MMDD.HHMM (dotted, zero-padded),
+        // optionally with a .# suffix for same-minute revisions.
         // Anything else (1.1.0, DDMMYYYYHHMM, etc.) is treated as older.
+        // Parts are zero-padded so .10 correctly sorts above .2.
         var parts = v.Split('.');
-        if (parts.Length == 3 && parts.All(x => x.All(char.IsDigit))) return v;
+        if ((parts.Length == 3 || parts.Length == 4) && parts.All(x => x.All(char.IsDigit)))
+            return string.Join(".", parts.Select(x => x.PadLeft(4, '0')));
         return "0000";
     }
     private static bool IsNewer(string current, string running)
