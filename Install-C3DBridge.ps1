@@ -30,6 +30,16 @@ param(
     [switch]$DotnetRestarted
 )
 
+# Self-elevate: installing to C:\C3D_Bridge and registering the logon
+# task need administrator rights, and the script must run with
+# ExecutionPolicy Bypass (no permanent policy change).
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $elevArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -InstallDir `"$InstallDir`" -SourceDir `"$SourceDir`""
+    if ($DotnetRestarted) { $elevArgs += " -DotnetRestarted" }
+    Start-Process powershell.exe -Verb RunAs -ArgumentList $elevArgs
+    exit
+}
+
 $ErrorActionPreference = 'Stop'
 
 Write-Host '=== C3D Print Bridge installer ===' -ForegroundColor Cyan

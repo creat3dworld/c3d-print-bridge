@@ -12,6 +12,15 @@ param(
     [switch]$KeepConfig
 )
 
+# Self-elevate: removing C:\C3D_Bridge and the Scheduled Task need
+# administrator rights; run with ExecutionPolicy Bypass (no permanent change).
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $elevArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -InstallDir `"$InstallDir`""
+    if ($KeepConfig) { $elevArgs += " -KeepConfig" }
+    Start-Process powershell.exe -Verb RunAs -ArgumentList $elevArgs
+    exit
+}
+
 $ErrorActionPreference = 'Stop'
 $appDir = Join-Path $InstallDir 'app'
 Write-Host '=== C3D Print Bridge uninstaller ===' -ForegroundColor Cyan

@@ -233,6 +233,13 @@ public static class Updater
         var zipUrl = $"https://github.com/{RepoOwner}/{RepoName}/archive/refs/heads/{Branch}.zip";
         return $@"
 $ErrorActionPreference = 'Stop'
+# Self-elevate (admin + Bypass) before doing any work; the non-elevated
+# instance exits right after relaunching, so only one copy runs.
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {{
+    Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+    exit
+}}
 Write-Host 'C3D Print Bridge updater — updating to v{latestVersion}...'
 Start-Sleep -Seconds 3
 Get-Process C3DBridge -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
