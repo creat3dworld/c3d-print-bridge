@@ -1,0 +1,16 @@
+C3D Print Bridge - version 2026.1021.2236
+What is new in this version (vs 2026.1021.2204):
+- Snapmaker auto-pull: on Scan, if a found Snapmaker/Moonraker printer
+  answers GET /access/api_key without a login (trusted LAN client,
+  which is how a U1 whose Paxx UI opens without a password behaves),
+  the bridge fills that printer's API key automatically — no typing,
+  no UI clicking. A 401 means the printer is not trusting this PC,
+  so it stays Needs Setup for a Paxx login or manual key instead.
+- Scan status now reports how many Moonraker keys were pulled.
+- Save to dashboard now also sends apiKey (in addition to the
+  legacy accessCode/password fields), so a pulled key reaches the
+  encrypted dashboard device config.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.

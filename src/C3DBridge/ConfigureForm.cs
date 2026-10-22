@@ -387,20 +387,35 @@ public sealed class ConfigureForm : Form
         try {
             var candidates = await Discovery.ProbeCandidatesAsync();
             if (candidates.Count == 0) { _status.Text = "No printer candidates found. Check the printers are on, on the same network, and in LAN mode for their brand."; return; }
-            var added = 0; var updated = 0;
+            var added = 0; var updated = 0; var keysPulled = 0;
             foreach (var c in candidates) {
                 var mac = MacResolver.Resolve(c.Ip);
+                PrinterConfig? target = null;
                 if (!string.IsNullOrWhiteSpace(mac)) {
                     var byMac = _printers.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.Mac) && string.Equals(p.Mac, mac, StringComparison.OrdinalIgnoreCase));
-                    if (byMac is not null) { if (!string.Equals(byMac.Ip, c.Ip, StringComparison.OrdinalIgnoreCase)) { var idx = _printers.IndexOf(byMac); _printers[idx] = byMac with { Ip = c.Ip }; updated++; } continue; }
-                    var byIp = _printers.FirstOrDefault(p => string.Equals(p.Ip, c.Ip, StringComparison.OrdinalIgnoreCase));
-                    if (byIp is not null) { var idx2 = _printers.IndexOf(byIp); _printers[idx2] = byIp with { Mac = mac }; continue; }
-                } else { if (_printers.Any(p => string.Equals(p.Ip, c.Ip, StringComparison.OrdinalIgnoreCase))) continue; }
-                var printer = new PrinterConfig { Name = c.Ip, Type = c.Kind, Ip = c.Ip, Camera = true, Mac = mac };
-                _printers.Add(printer); added++;
+                    if (byMac is not null) { if (!string.Equals(byMac.Ip, c.Ip, StringComparison.OrdinalIgnoreCase)) { var idx = _printers.IndexOf(byMac); _printers[idx] = byMac with { Ip = c.Ip }; updated++; } target = _printers.FirstOrDefault(p => string.Equals(p.Ip, c.Ip, StringComparison.OrdinalIgnoreCase)); }
+                    else {
+                        var byIp = _printers.FirstOrDefault(p => string.Equals(p.Ip, c.Ip, StringComparison.OrdinalIgnoreCase));
+                        if (byIp is not null) { var idx2 = _printers.IndexOf(byIp); _printers[idx2] = byIp with { Mac = mac }; target = _printers[idx2]; }
+                    }
+                } else { target = _printers.FirstOrDefault(p => string.Equals(p.Ip, c.Ip, StringComparison.OrdinalIgnoreCase)); }
+                if (target is null) {
+                    var printer = new PrinterConfig { Name = c.Ip, Type = c.Kind, Ip = c.Ip, Camera = true, Mac = mac };
+                    _printers.Add(printer); added++; target = printer;
+                }
+                // Snapmaker auto-pull: if the printer's UI opens without a
+                // password, Moonraker answers /access/api_key to a trusted
+                // LAN client, so Scan can fill the key with no typing.
+                // A 401 means it is not trusted — leave it for Paxx login.
+                if (c.Kind == "snapmaker" && string.IsNullOrWhiteSpace(target.AccessCode)) {
+                    var key = await C3DBridge.Printers.SnapmakerAdapter.TryFetchApiKeyAsync(c.Ip, c.Port);
+                    if (!string.IsNullOrWhiteSpace(key)) {
+                        var idx3 = _printers.IndexOf(target); if (idx3 >= 0) _printers[idx3] = target with { AccessCode = key }; keysPulled++;
+                    }
+                }
             }
             RefreshList();
-            _status.Text = added > 0 || updated > 0 ? $"Found {candidates.Count} port-open device(s). {added} new printer(s) added, named by their IP, {updated} known printer(s) moved to a new IP by MAC. Click Needs Setup on a printer to fill in its login, Apply to list, then Save. Delete any that are not printers." : $"Found {candidates.Count} candidate(s), all already in the list. A port being open is not proof it is a printer.";
+            _status.Text = added > 0 || updated > 0 || keysPulled > 0 ? $"Found {candidates.Count} port-open device(s). {added} new printer(s) added, named by their IP, {updated} known printer(s) moved to a new IP by MAC, {keysPulled} Moonraker API key(s) pulled automatically with no typing. Click Save to keep them, or Needs Setup for any printer still missing a login. Delete any that are not printers." : $"Found {candidates.Count} candidate(s), all already in the list. A port being open is not proof it is a printer.";
         } catch (Exception ex) { _status.Text = $"Scan failed: {ex.Message}"; }
         finally { scanBtn.Enabled = true; }
     }
@@ -449,7 +464,7 @@ public sealed class ConfigureForm : Form
                 if (string.IsNullOrWhiteSpace(pr.Ip)) continue;
                 var user = pr.LoginUser ?? pr.PaxxUser ?? "";
                 var pass = pr.LoginPassword ?? pr.PaxxPassword ?? pr.AccessCode ?? "";
-                list.Add(new Dictionary<string, object?> { ["name"] = pr.Name ?? pr.Ip, ["type"] = pr.Type, ["ip"] = pr.Ip, ["deviceId"] = pr.Serial ?? "", ["username"] = user, ["password"] = pass, ["serial"] = pr.Serial ?? "", ["accessCode"] = pr.AccessCode ?? "", ["paxxUser"] = pr.PaxxUser ?? "", ["paxxPassword"] = pr.PaxxPassword ?? "", ["loginUser"] = user, ["loginPassword"] = pass, ["camera"] = pr.Camera, ["mac"] = pr.Mac ?? "" });
+                list.Add(new Dictionary<string, object?> { ["name"] = pr.Name ?? pr.Ip, ["type"] = pr.Type, ["ip"] = pr.Ip, ["deviceId"] = pr.Serial ?? "", ["username"] = user, ["password"] = pass, ["apiKey"] = pr.AccessCode ?? "", ["serial"] = pr.Serial ?? "", ["accessCode"] = pr.AccessCode ?? "", ["paxxUser"] = pr.PaxxUser ?? "", ["paxxPassword"] = pr.PaxxPassword ?? "", ["loginUser"] = user, ["loginPassword"] = pass, ["camera"] = pr.Camera, ["mac"] = pr.Mac ?? "" });
             }
             var payload = JsonSerializer.Serialize(new { bridge = "shop-pc", printers = list });
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };

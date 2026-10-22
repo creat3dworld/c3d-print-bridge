@@ -12,6 +12,13 @@
 //        → starts the uploaded file.
 //   POST /printer/print/cancel → stops a print (not used by the
 //        v1 worker; present for future dashboard cancel support).
+//   GET  /access/api_key → returns the Moonraker API key as JSON
+//        when the caller is a trusted client (no login). On a U1
+//        whose Fluidd/Paxx UI opens without a password, the bridge
+//        on the same LAN can therefore pull the key on Scan with
+//        no user typing. If Moonraker answers 401, the caller is
+//        not trusted and the key must come from a Paxx login or
+//        manual entry instead — never guessed.
 //
 // HONEST LIMITS:
 // - Filament material/color: Moonraker does not expose the U1's
@@ -50,6 +57,32 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
     }
 
     private string Base => $"http://{_cfg.Ip}:{_port}";
+
+    /// <summary>Try to pull a Moonraker API key from a printer that
+    /// answers /access/api_key without a login (trusted LAN client).
+    /// Returns null on any failure, including 401 — the caller must
+    /// fall back to Paxx login or manual entry, never fabricate a key.</summary>
+    public static async Task<string?> TryFetchApiKeyAsync(string ip, int port = 7125)
+    {
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            using var res = await http.GetAsync($"http://{ip}:{port}/access/api_key");
+            if (!res.IsSuccessStatusCode) return null;
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            var root = doc.RootElement;
+            if (root.TryGetProperty("result", out var r))
+            {
+                if (r.ValueKind == JsonValueKind.String) return string.IsNullOrWhiteSpace(r.GetString()) ? null : r.GetString();
+                if (r.ValueKind == JsonValueKind.Object && r.TryGetProperty("api_key", out var k) && k.ValueKind == JsonValueKind.String)
+                    return string.IsNullOrWhiteSpace(k.GetString()) ? null : k.GetString();
+            }
+            if (root.TryGetProperty("api_key", out var k2) && k2.ValueKind == JsonValueKind.String)
+                return string.IsNullOrWhiteSpace(k2.GetString()) ? null : k2.GetString();
+            return null;
+        }
+        catch { return null; }
+    }
 
     private async Task<bool> AddAuthAsync(HttpRequestMessage req, CancellationToken ct)
     {
