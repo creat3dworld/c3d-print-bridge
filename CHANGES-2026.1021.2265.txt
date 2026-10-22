@@ -1,0 +1,28 @@
+C3D Print Bridge - version 2026.1021.2265
+Fix for the flyout labels stacked on fields in 2264:
+
+- The 2264 FlowLayoutPanel is gone. FlowLayout + Dock Fill
+  inside a flow child collapsed each field row, so every
+  label ended up on top of its field, in Configure selected,
+  in Add printer, and in every other flyout path.
+- Flyout fields now live in a TableLayoutPanel, one absolute
+  48px row per field: label at Top 0, field at Top 18, both
+  positioned absolutely inside the row panel. A label and
+  its field cannot overlap, in any path, because the row
+  height is fixed and the positions are fixed.
+- A hidden field's row is set to 0px, so Bambu (no Username
+  or API Key row), Snapmaker (no Device ID or API Key row),
+  and Other all show with no gaps and no stacking.
+- Nothing else in 2264 changes: flyout is attached to the
+  form, status text is gone from the grid, Add printer is
+  in the grid, and Scan probes every local subnet.
+- Scan note, still open: one printer is still missing from
+  Scan. Scan only finds open Bambu (8883) / Snapmaker (7125)
+  ports, so a printer that is off, asleep, or not in LAN
+  mode will not appear — use Add printer for it, and tell
+  Muse which printer (brand + IP) is missing so its port
+  can be checked.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.
