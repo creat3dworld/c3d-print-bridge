@@ -82,7 +82,7 @@ public sealed class Worker
                     var tasks = _printers.All.Select(async a =>
                     {
                         try { return await a.GetStatusAsync(ct); }
-                        catch (Exception ex) { return new PrinterStatus { Name = a.Name, State = "offline", Detail = ex.Message }; }
+                        catch (Exception ex) { return new PrinterStatus { Name = a.Name, Type = a.Type, Ip = a.Ip, State = "offline", Detail = ex.Message }; }
                     });
                     foreach (var st in await Task.WhenAll(tasks))
                         statuses[st.Name] = st;

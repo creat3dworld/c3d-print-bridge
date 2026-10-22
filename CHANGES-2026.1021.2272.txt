@@ -1,0 +1,12 @@
+C3D Print Bridge - version 2026.1021.2272
+Fix the live-printers bug (dashboard 0.8.2-bugfix-dev is the matching side).
+- Status pushes now send type, ip, and status (same value as state) in
+  addition to every existing field. Nothing was removed.
+- PrinterStatus now carries Type/Ip, filled by each adapter (Bambu,
+  Snapmaker, Generic) from its own config, including offline statuses
+  and the Worker catch-all offline status.
+- Dashboard side (0.8.2, not in this file): heartbeat no longer wipes
+  the live list when it sends no printers field, state is mapped to
+  status, and missing type/ip falls back to the stored device config.
+- Everything else unchanged from 2271 (FreeConsole tray, hidden
+  updater PowerShell window). NOT pushed to GitHub in this task.

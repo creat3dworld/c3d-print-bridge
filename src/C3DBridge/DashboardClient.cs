@@ -111,6 +111,9 @@ public sealed class DashboardClient : IDisposable
                 printers = printers.Select(p => new
                 {
                     name = p.Name,
+                    type = p.Type,
+                    ip = p.Ip,
+                    status = p.State,
                     state = p.State,
                     progress_percent = p.ProgressPercent,
                     remaining_seconds = p.RemainingSeconds,

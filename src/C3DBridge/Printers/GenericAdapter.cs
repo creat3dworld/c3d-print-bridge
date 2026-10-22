@@ -12,10 +12,12 @@ namespace C3DBridge.Printers;
 public sealed class GenericAdapter : IPrinterAdapter
 {
     private readonly PrinterConfig _cfg;
-    public GenericAdapter(PrinterConfig cfg) { _cfg = cfg; Name = cfg.Name; }
+    public GenericAdapter(PrinterConfig cfg) { _cfg = cfg; Name = cfg.Name; Type = cfg.Type; Ip = cfg.Ip; }
     public string Name { get; }
+    public string Type { get; }
+    public string Ip { get; }
     public Task<PrinterStatus> GetStatusAsync(CancellationToken ct)
-        => Task.FromResult(new PrinterStatus { Name = Name, State = "offline", Detail = $"Generic brand '{_cfg.Type}' — no live adapter yet, config saved." });
+        => Task.FromResult(new PrinterStatus { Name = Name, Type = Type, Ip = Ip, State = "offline", Detail = $"Generic brand '{_cfg.Type}' — no live adapter yet, config saved." });
     public Task<(bool Ok, string Reason)> UploadFileAsync(string localPath, string fileName, CancellationToken ct)
         => Task.FromResult((false, $"Generic brand '{_cfg.Type}' — upload not supported yet."));
     public Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct)

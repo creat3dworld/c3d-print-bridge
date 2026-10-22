@@ -48,6 +48,8 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
     private readonly HttpClient _http;
     private string? _moonrakerToken;
     public string Name => _cfg.Name;
+    public string Type => _cfg.Type;
+    public string Ip => _cfg.Ip;
 
     public SnapmakerAdapter(PrinterConfig cfg)
     {
@@ -154,6 +156,8 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
             return new PrinterStatus
             {
                 Name = Name,
+                Type = Type,
+                Ip = Ip,
                 State = state,
                 ProgressPercent = percent,
                 Detail = detail,
@@ -238,6 +242,8 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
     private PrinterStatus Offline(string detail) => new()
     {
         Name = Name,
+        Type = Type,
+        Ip = Ip,
         State = "offline",
         Detail = detail,
         Ams = new AmsState { Known = false, Detail = "Printer unreachable; AMS unknown." },

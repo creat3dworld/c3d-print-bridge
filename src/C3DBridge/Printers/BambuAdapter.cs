@@ -50,6 +50,8 @@ public sealed class BambuAdapter : IPrinterAdapter
     private readonly PrinterConfig _cfg;
     private readonly int _mqttPort;
     public string Name => _cfg.Name;
+    public string Type => _cfg.Type;
+    public string Ip => _cfg.Ip;
 
     public BambuAdapter(PrinterConfig cfg)
     {
@@ -103,6 +105,8 @@ public sealed class BambuAdapter : IPrinterAdapter
             return new PrinterStatus
             {
                 Name = Name,
+                Type = Type,
+                Ip = Ip,
                 State = state,
                 ProgressPercent = percent,
                 RemainingSeconds = remaining,
@@ -302,6 +306,8 @@ public sealed class BambuAdapter : IPrinterAdapter
     private PrinterStatus Offline(string detail) => new()
     {
         Name = Name,
+        Type = Type,
+        Ip = Ip,
         State = "offline",
         Detail = detail,
         Ams = new AmsState { Known = false, Detail = "Printer unreachable; AMS unknown." },

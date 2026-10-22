@@ -17,6 +17,8 @@ namespace C3DBridge.Printers;
 public interface IPrinterAdapter
 {
     string Name { get; }
+    string Type { get; }
+    string Ip { get; }
 
     /// <summary>Current live state. Never throws: on any failure it
     /// returns state "offline" with the reason in Detail.</summary>

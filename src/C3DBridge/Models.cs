@@ -105,6 +105,12 @@ public sealed record DashboardJobItem
 public sealed record PrinterStatus
 {
     [JsonPropertyName("name")] public string Name { get; init; } = "";
+    // BUGFIX 2272: dashboard expects type/ip/status; older bridge
+    // statuses carried neither type nor ip, so dashboard rows
+    // rendered blank with status "unknown". Filled by adapters
+    // from their own config; empty stays empty (never guessed).
+    [JsonPropertyName("type")] public string Type { get; init; } = "";
+    [JsonPropertyName("ip")] public string Ip { get; init; } = "";
     [JsonPropertyName("state")] public string State { get; init; } = "offline";
     // idle | printing | paused | error | offline
     [JsonPropertyName("progress_percent")] public double? ProgressPercent { get; init; }
