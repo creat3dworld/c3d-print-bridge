@@ -33,7 +33,7 @@ namespace C3DBridge;
 
 public static class Program
 {
-    public const string Version = "2026.1021.2269";
+    public const string Version = "2026.1021.2270";
 
     // Single-instance, newest-wins: only one bridge runs at a time.
     // A running instance writes its version + pid to a temp file.
@@ -133,6 +133,18 @@ public static class Program
         }
     }
 
+    // Detach from the console in Windows Forms modes only.
+    // The app is built as a console Exe so --version, setup,
+    // --discover and --self-test can print to a console, but
+    // that means tray/Configure mode also gets a cmd window,
+    // and closing that window terminates the tray app — the
+    // bug reported Oct 22, 2026. FreeConsole closes the cmd
+    // window without stopping the tray process, so there is
+    // no window left to close by accident. Console modes
+    // return before this point and keep their console.
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool FreeConsole();
+
     [STAThread]
     public static async Task<int> Main(string[] args)
     {
@@ -146,6 +158,7 @@ public static class Program
 
         if (args.Contains("--configure") && OperatingSystem.IsWindows())
         {
+            try { FreeConsole(); } catch { }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             var (loadedCfg, _) = Config.Load();
@@ -196,6 +209,7 @@ public static class Program
             if (args.Length == 0 && OperatingSystem.IsWindows())
             {
                 if (!TryTakeSingleInstance()) return 0;
+                try { FreeConsole(); } catch { }
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(new TrayApplicationContext());
@@ -213,6 +227,7 @@ public static class Program
         if (args.Length == 0 && OperatingSystem.IsWindows())
         {
             if (!TryTakeSingleInstance()) return 0;
+            try { FreeConsole(); } catch { }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new TrayApplicationContext());

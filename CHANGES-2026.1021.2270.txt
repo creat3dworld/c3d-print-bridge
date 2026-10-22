@@ -1,0 +1,13 @@
+C3D Print Bridge - version 2026.1021.2270
+Fix for cmd window killing the tray app, reported Oct 22, 2026.
+- Root cause: the app is built as a console Exe (so --version,
+  setup, --discover and --self-test can print to a console),
+  so tray/Configure mode also gets a cmd window, and closing
+  that window terminates the tray process attached to it.
+- Fix: tray mode and --configure mode now call FreeConsole()
+  (kernel32) before starting the Windows Forms loop. The cmd
+  window closes on its own without stopping the tray, so
+  there is no window left to close by accident. Console modes
+  (--version, setup, --discover, --self-test) return before
+  this point and keep their console output unchanged.
+- Everything else unchanged from 2269.
