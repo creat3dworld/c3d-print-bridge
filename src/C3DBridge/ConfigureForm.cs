@@ -125,7 +125,7 @@ public sealed class ConfigureForm : Form
 
         // Main list area (fills remaining space, scales with window)
         var main = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12) };
-        var listLabel = new Label { Text = "Printers — click the blue IP to open the printer, or the blue Needs setup link to configure it", Left = 0, Top = 0, Width = 600, Height = 18 };
+        var listLabel = new Label { Text = "Printers — blue IP opens a Snapmaker printer in a browser; Bambu has no browser page (use Bambu Studio). Blue Needs setup configures it.", Left = 0, Top = 0, Width = 600, Height = 18 };
         main.Controls.Add(listLabel);
         _list.View = View.Details;
         _list.FullRowSelect = true;
@@ -149,7 +149,12 @@ public sealed class ConfigureForm : Form
             var hit = _list.HitTest(e.Location);
             if (hit.Item == null || hit.Item.Index >= _printers.Count) return;
             var col = ColumnAtX(e.X);
-            if (col == 1) { var ip = _printers[hit.Item.Index].Ip; if (!string.IsNullOrWhiteSpace(ip)) { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("http://" + ip.Trim()) { UseShellExecute = true }); } catch { } } }
+            if (col == 1) {
+                var pr = _printers[hit.Item.Index];
+                if (string.Equals((pr.Type ?? "").Trim(), "bambu", StringComparison.OrdinalIgnoreCase)) { _status.Text = "Bambu printers have no browser page — use Bambu Studio or Bambu Handy for this printer. Its IP is only for the bridge's MQTT connection."; return; }
+                if (!string.Equals((pr.Type ?? "").Trim(), "snapmaker", StringComparison.OrdinalIgnoreCase)) { _status.Text = "This printer type has no confirmed browser page, so its IP is not a link. Use its own app or screen for it."; return; }
+                var ip = pr.Ip; if (!string.IsNullOrWhiteSpace(ip)) { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("http://" + ip.Trim()) { UseShellExecute = true }); } catch { } }
+            }
             else if (col == 2 && hit.Item.SubItems.Count > 2 && hit.Item.SubItems[2].Text == "Needs setup") { _editingIndex = hit.Item.Index; OpenFlyoutPrinter(_printers[_editingIndex]); }
         };
         _list.MouseDoubleClick += (_, e) => {
@@ -167,7 +172,7 @@ public sealed class ConfigureForm : Form
         deleteBtn.Click += (_, _) => DeleteSelected();
         main.Controls.Add(deleteBtn);
         var openBtn = new Button { Text = "Open IP in browser", Left = 320, Top = 300, Width = 152, Height = 34, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
-        openBtn.Click += (_, _) => { if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count) { var ip = _printers[_list.SelectedIndices[0]].Ip; if (!string.IsNullOrWhiteSpace(ip)) { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("http://" + ip.Trim()) { UseShellExecute = true }); } catch { } } } };
+        openBtn.Click += (_, _) => { if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count) { var pr = _printers[_list.SelectedIndices[0]]; if (string.Equals((pr.Type ?? "").Trim(), "bambu", StringComparison.OrdinalIgnoreCase)) { MessageBox.Show("Bambu printers have no browser page — use Bambu Studio or Bambu Handy for this printer. Its IP is only for the bridge's MQTT connection.", "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Information); return; } var ip = pr.Ip; if (!string.IsNullOrWhiteSpace(ip)) { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("http://" + ip.Trim()) { UseShellExecute = true }); } catch { } } } };
         main.Controls.Add(openBtn);
         var pullBtn = new Button { Text = "Pull from dashboard", Left = 480, Top = 300, Width = 152, Height = 34, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
         pullBtn.Click += async (_, _) => await PullFromDashboardAsync(pullBtn);
@@ -353,8 +358,10 @@ public sealed class ConfigureForm : Form
             // why the blue IP / blue Needs setup links never looked blue.
             item.UseItemStyleForSubItems = false;
             var ipItem = new ListViewItem.ListViewSubItem(item, p.Ip ?? "");
-            ipItem.ForeColor = System.Drawing.Color.Blue;
-            ipItem.Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Underline);
+            if (string.Equals((p.Type ?? "").Trim(), "snapmaker", StringComparison.OrdinalIgnoreCase)) {
+                ipItem.ForeColor = System.Drawing.Color.Blue;
+                ipItem.Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Underline);
+            }
             item.SubItems.Add(ipItem);
             var statusItem = new ListViewItem.ListViewSubItem(item, ready ? "Ready" : "Needs setup");
             if (ready) { statusItem.ForeColor = System.Drawing.Color.FromArgb(0, 128, 0); }

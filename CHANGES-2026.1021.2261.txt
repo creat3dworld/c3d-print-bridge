@@ -1,0 +1,18 @@
+C3D Print Bridge - version 2026.1021.2261
+Bambu IP link fix (vs 2026.1021.2260):
+- No prefix or suffix fixes a Bambu IP link: stock Bambu firmware
+  serves no browser web page at all (it talks MQTT on 8883 and
+  FTP on 990, and is controlled from Bambu Studio / Handy).
+  A Fluidd-style page on a Bambu only exists with third-party
+  firmware such as X1Plus, or on a separate client PC (e.g.
+  SimplyPrint's own web panel on port 8000 of that PC, not the
+  printer).
+- So the IP column is now a blue link ONLY for Snapmaker
+  (Moonraker/Fluidd). Bambu IPs are plain text, not a dead link.
+- Clicking a Bambu IP, or Open IP in browser on a Bambu, now
+  says plainly: no browser page, use Bambu Studio / Handy.
+  Its IP is only for the bridge's MQTT connection.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.
