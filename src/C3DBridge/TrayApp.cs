@@ -33,6 +33,9 @@ public sealed class TrayApplicationContext : ApplicationContext
     private CancellationTokenSource? _workerCts;
     private Task? _workerTask;
     private bool _exitRequested;
+    private ToolStripMenuItem? _autoUpdateItem;
+    private System.Threading.Timer? _autoUpdateTimer;
+    private bool _autoUpdateRunning;
 
     public TrayApplicationContext()
     {
@@ -52,11 +55,19 @@ public sealed class TrayApplicationContext : ApplicationContext
         selfTestItem.Click += (_, _) => RunSelfTest();
         var updatesItem = new ToolStripMenuItem("Get updates…");
         updatesItem.Click += async (_, _) => await GetUpdatesAsync();
+        // Auto-update option (2273): a tray toggle mirroring the
+        // Configure checkbox. Default OFF. Toggling it saves the
+        // same bridge-config.json field the Configure checkbox
+        // saves, so the two can never disagree for long — the
+        // toggle is refreshed after Configure closes.
+        _autoUpdateItem = new ToolStripMenuItem("Automatically update the bridge");
+        _autoUpdateItem.Click += (_, _) => ToggleAutoUpdate();
         var exitItem = new ToolStripMenuItem("Exit");
         exitItem.Click += (_, _) => ExitApp();
         menu.Items.Add(configureItem);
         menu.Items.Add(selfTestItem);
         menu.Items.Add(updatesItem);
+        menu.Items.Add(_autoUpdateItem);
         menu.Items.Add(new ToolStripSeparator());
         var repairItem = new ToolStripMenuItem("Repair and reinstall…");
         repairItem.Click += (_, _) => UninstallApp("Uninstall-Repair-Reinstall.ps1",
@@ -72,6 +83,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         StartWorker();
         SleepPreventer.Prevent();
+        RefreshAutoUpdateMenu();
     }
 
     // Creat3d World logo (rounded logo) as the tray + application icon.
@@ -1690,6 +1702,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             Program.Log("Config saved from the tray Configure window; restarting the relay loop.");
             RestartWorker();
+            // The Configure checkbox may have flipped auto-update:
+            // mirror it in the tray toggle and (re)start/stop the
+            // background check timer to match.
+            RefreshAutoUpdateMenu();
         }
     }
 
@@ -1706,6 +1722,104 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             MessageBox.Show($"Self-test could not start: {ex.Message}", "C3D Print Bridge",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    // Auto-update (2273). The option lives in bridge-config.json
+    // ("auto_update", default false). When ON, the tray checks on
+    // startup (after a 60-second settle delay, so the relay loop
+    // is up first) and then every 24 hours. When OFF, nothing
+    // checks in the background at all — manual Get updates only.
+    private void RefreshAutoUpdateMenu()
+    {
+        var (cfg, _) = Config.Load();
+        var enabled = cfg?.AutoUpdate ?? false;
+        if (_autoUpdateItem is not null) _autoUpdateItem.Checked = enabled;
+        RestartAutoUpdateTimer(enabled);
+    }
+
+    private void RestartAutoUpdateTimer(bool enabled)
+    {
+        try { _autoUpdateTimer?.Dispose(); } catch { }
+        _autoUpdateTimer = null;
+        if (!enabled) return;
+        // First check 60s after (re)start, then every 24 hours.
+        // Never more often than hourly: the 24h period is well
+        // inside that bound, and a skipped cycle (printing, or a
+        // failed check) simply waits for the next one.
+        _autoUpdateTimer = new System.Threading.Timer(
+            _ => { _ = AutoUpdateCheckAsync(); },
+            null, TimeSpan.FromSeconds(60), TimeSpan.FromHours(24));
+    }
+
+    private void ToggleAutoUpdate()
+    {
+        var (cfg, error) = Config.Load();
+        if (cfg is null)
+        {
+            MessageBox.Show($"Could not save the auto-update option: {error}",
+                "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        var enabled = !cfg.AutoUpdate;
+        Config.Save(cfg with { AutoUpdate = enabled });
+        if (_autoUpdateItem is not null) _autoUpdateItem.Checked = enabled;
+        Program.Log(enabled
+            ? "Auto-update turned ON: the bridge will check for updates on startup and every 24 hours."
+            : "Auto-update turned OFF: updates are manual (tray Get updates) only.");
+        RestartAutoUpdateTimer(enabled);
+        if (enabled) _ = AutoUpdateCheckAsync();
+    }
+
+    /// <summary>Silent auto-update check. Unlike manual Get
+    /// updates, this never pops a Yes/No prompt and never pops
+    /// a result box when there is nothing to do or the check
+    /// fails — a daily nag box would defeat the point. It logs
+    /// every outcome, skips the cycle when the bridge knows a
+    /// print is running, and only when a newer version is
+    /// confirmed does it run the SAME Updater.StartUpdate path
+    /// manual Get updates uses (hidden PowerShell window, its
+    /// own result message box, then the bridge restarts), and
+    /// close this app so the installer can replace the exe.
+    /// Prints started outside the bridge that it has not polled
+    /// yet are NOT covered by the guard — see Worker.AnyPrinting.</summary>
+    private async Task AutoUpdateCheckAsync()
+    {
+        if (_autoUpdateRunning || _exitRequested) return;
+        _autoUpdateRunning = true;
+        try
+        {
+            var (cfg, _) = Config.Load();
+            if (cfg is null || !cfg.AutoUpdate) return;
+            if (Worker.AnyPrinting)
+            {
+                Program.Log("Auto-update check skipped this cycle: a print is in progress.");
+                return;
+            }
+            var result = await Updater.CheckForUpdateAsync();
+            switch (result.Kind)
+            {
+                case UpdateCheckResultKind.Available:
+                    Program.Log($"Auto-update: {result.Detail} Updating now.");
+                    if (!Updater.StartUpdate(result.LatestVersion!, out var reason))
+                    {
+                        Program.Log($"Auto-update could not start: {reason}");
+                        break;
+                    }
+                    ExitApp();
+                    break;
+                default:
+                    Program.Log($"Auto-update check: {result.Detail}");
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"Auto-update check failed (continuing): {ex.Message}");
+        }
+        finally
+        {
+            _autoUpdateRunning = false;
         }
     }
 
@@ -1794,6 +1908,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private void ExitApp()
     {
         _exitRequested = true;
+        try { _autoUpdateTimer?.Dispose(); } catch { /* best effort */ }
         try { _workerCts?.Cancel(); } catch { /* best effort */ }
         SleepPreventer.Allow();
         _icon.Visible = false;

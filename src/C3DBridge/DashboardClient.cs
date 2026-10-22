@@ -161,6 +161,29 @@ public sealed class DashboardClient : IDisposable
         }
     }
 
+    /// <summary>Push one bed-view snapshot to the dashboard
+    /// (farm/bed-snapshot). Returns (ok, status). A 404 means
+    /// the dashboard plugin does not have the Bed View route
+    /// yet — the caller logs that once and stops trying until
+    /// restart, instead of spamming. The payload carries no
+    /// credentials: printer name/ip/type, capture time, the
+    /// JPEG bytes, and the source label only.</summary>
+    public async Task<(bool Ok, System.Net.HttpStatusCode Status)> PushBedSnapshotAsync(CameraSnapshot snap, CancellationToken ct)
+    {
+        var (ok, status, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/bed-snapshot",
+            new
+            {
+                printer_name = snap.PrinterName,
+                printer_ip = snap.PrinterIp,
+                printer_type = snap.PrinterType,
+                captured_unix = snap.CapturedUnix,
+                snapshot_base64 = snap.SnapshotBase64,
+                snapshot_source = snap.SnapshotSource,
+                camera_available = snap.CameraAvailable,
+            }, ct);
+        return (ok, status);
+    }
+
     public async Task<bool> ReportJobAsync(JobReport report, CancellationToken ct)
     {
         var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/job-report",

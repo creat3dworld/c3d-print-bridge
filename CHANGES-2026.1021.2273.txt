@@ -1,0 +1,91 @@
+C3D Print Bridge - version 2026.1021.2273
+Auto-update OPTION, per user request. Local source only:
+NOT pushed to GitHub, NOT deployed - the PC cannot get 2273
+until it is pushed and Marlena approves it.
+
+What is new
+- A user-facing option labelled exactly:
+  "Automatically update the bridge"
+  Found in two places, which stay in sync because they save
+  the same setting:
+  (1) Configure window -> Bridge settings flyout, as a
+      checkbox at the bottom of the bridge fields. Like the
+      other bridge fields, it is applied when the flyout
+      closes (no separate Save button).
+  (2) Tray icon right-click menu, as a checkable toggle
+      just under "Get updates...". Toggling it saves
+      immediately. After the Configure window closes, the
+      tray toggle is refreshed from disk, so the two can
+      never disagree for long.
+
+Default and storage
+- Default OFF. Nothing changes for anyone who does not opt
+  in: no background checks, manual tray Get updates only.
+- Stored as "auto_update": false (or true) in the bridge's
+  local bridge-config.json, next to the other bridge
+  settings. The installer already preserves bridge-config.json
+  (and bridge-key.txt) across updates, so the choice survives
+  an update. It is never sent to the dashboard and never
+  stored in the repo.
+
+When the option is ON
+- The tray app checks for a newer version 60 seconds after
+  it starts (so the relay loop is up first), and then once
+  every 24 hours. It never checks more often than hourly;
+  the 24-hour period is well inside that bound.
+- The check is silent: no pop-up when up to date, and no
+  pop-up when a check fails - only a line in bridge.log.
+  A daily nag box would defeat the point of auto-update.
+- If a newer version is confirmed, it runs the SAME update
+  path manual Get updates uses: Updater.StartUpdate, with
+  its hidden PowerShell window and its own result message
+  box, and the tray app closes so the installer can replace
+  the exe. There is no Yes/No prompt on the auto path -
+  that is what opting in means.
+
+Print-in-progress guard, and its limit
+- The auto check is skipped for that cycle when the bridge
+  itself knows a print is running: Worker.AnyPrinting is
+  true when a polled printer reports "printing" or when
+  the bridge is executing/monitoring a dashboard job.
+  A skipped cycle simply waits for the next 24-hour check.
+- LIMIT, stated plainly: this guard does NOT cover prints
+  started outside the bridge (for example directly from a
+  printer app) that the bridge has not polled yet. If
+  Marlena wants that covered too, the next step would be
+  a decision about how strict to be (for example: only
+  auto-update when every configured printer reports idle
+  or offline, and skip otherwise) - that stricter rule was
+  NOT built here, because it would change behaviour for
+  printers that are merely offline/unreachable.
+
+When the option is OFF
+- Behaviour is exactly as today: no background checks,
+  manual tray Get updates only, with its usual prompts.
+
+Deliberately NOT changed
+- Key handling, device config, printer adapters, heartbeat
+  and status formats, FreeConsole tray behaviour, and the
+  thin-relay rule: the bridge never starts prints on its
+  own, and auto-update never starts, stops, or chooses a
+  print job. Manual Get updates behaviour is unchanged.
+- No dashboard change in this version.
+
+Verification still needed (after push + approval + PC update)
+- On a PC on 2273 with the option OFF: no background
+  update check in the log, manual Get updates works as
+  before.
+- Turn the option ON in Configure, restart the tray, and
+  confirm the tray toggle shows checked; turn it OFF from
+  the tray and confirm Configure shows it unchecked.
+- With the option ON and no print running, confirm a
+  newer version (once one exists past 2273) is picked up
+  and updated via the normal update path, with config
+  and key preserved.
+- With a print running, confirm the auto check logs
+  "skipped this cycle" and does not start an update.
+
+Build note: no dotnet compiler is available in this
+workspace, so this was hand-reviewed and brace-balanced
+only (Program, Models, ConfigureForm, TrayApp, Worker all
+balance at zero). NOT compiled, NOT pushed, NOT deployed.

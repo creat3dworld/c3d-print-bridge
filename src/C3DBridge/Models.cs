@@ -68,6 +68,13 @@ public sealed record BridgeConfig
     /// <summary>Seconds between heartbeats. Default 60. The dashboard
     /// treats a heartbeat older than 10 minutes as stale.</summary>
     [JsonPropertyName("heartbeat_interval_seconds")] public int HeartbeatIntervalSeconds { get; init; } = 60;
+    /// <summary>Auto-update option (2273). Default OFF: nothing
+    /// changes unless the user opts in. When ON, the tray app
+    /// checks for a newer bridge version on startup and every
+    /// 24 hours, and runs the normal update path when one is
+    /// found. Stored in bridge-config.json, preserved by the
+    /// installer like every other local setting.</summary>
+    [JsonPropertyName("auto_update")] public bool AutoUpdate { get; init; }
     [JsonPropertyName("printers")] public List<PrinterConfig> Printers { get; init; } = new();
 }
 
@@ -130,6 +137,24 @@ public sealed record AmsState
     [JsonPropertyName("material")] public string Material { get; init; } = "";
     [JsonPropertyName("color")] public string Color { get; init; } = "";
     [JsonPropertyName("detail")] public string Detail { get; init; } = "";
+}
+
+/// <summary>One bed-view snapshot, captured by the bridge on the
+/// LAN and pushed to the dashboard. The dashboard stores only
+/// the latest snapshot per printer and NEVER auto-passes a bed
+/// check from it — a human must confirm from the image. The
+/// snapshot_source is always "owner_snapshot_url": the bridge
+/// never guesses a camera URL, and a printer with no snapshot
+/// URL set sends no snapshot at all.</summary>
+public sealed record CameraSnapshot
+{
+    [JsonPropertyName("printer_name")] public string PrinterName { get; init; } = "";
+    [JsonPropertyName("printer_ip")] public string PrinterIp { get; init; } = "";
+    [JsonPropertyName("printer_type")] public string PrinterType { get; init; } = "";
+    [JsonPropertyName("captured_unix")] public long CapturedUnix { get; init; }
+    [JsonPropertyName("snapshot_base64")] public string SnapshotBase64 { get; init; } = "";
+    [JsonPropertyName("snapshot_source")] public string SnapshotSource { get; init; } = "owner_snapshot_url";
+    [JsonPropertyName("camera_available")] public bool CameraAvailable { get; init; }
 }
 
 /// <summary>Per-job progress report back to the dashboard.

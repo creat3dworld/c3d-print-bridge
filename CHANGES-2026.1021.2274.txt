@@ -1,0 +1,56 @@
+C3D Print Bridge - version 2026.1021.2274
+Bed View camera snapshots, for dashboard 0.8.3-farm-camera-dev.
+NOT pushed to GitHub in this task. 2273 auto-update work is
+kept intact (default OFF, unchanged); this build only adds
+bed snapshots on top of it.
+
+Camera sources, per printer type — honest limits:
+- Bambu (P2S, X2D): stock firmware has NO verified lightweight
+  still-image endpoint, and decoding its video stream would
+  need heavy dependencies this thin relay deliberately avoids.
+  A snapshot is sent ONLY when the owner set a snapshot_url
+  in that printer's bridge config (BambuAdapter.
+  TryGetSnapshotAsync, JPEG-validated, 100 bytes - 2 MB).
+  CameraAvailable=true means the printer HAS a camera, NOT
+  that a snapshot URL is set — the two are kept separate.
+- Snapmaker U1 (Paxx/Fluidd): Paxx streams video (RTSP /
+  webcam pages), not stills, so the same rule applies:
+  snapshot ONLY from an owner-set snapshot_url
+  (SnapmakerAdapter.TryGetSnapshotAsync, same validation).
+  Without one, no snapshot is reported — never a fake image.
+- Generic/other: previously always returned no snapshot.
+  Now honours an owner-set snapshot_url the same way
+  (GenericAdapter.TryGetSnapshotAsync). No URL = no image.
+
+What changed:
+- Worker (2274): after each status tick, for printers whose
+  live status is IDLE, at most once a minute per printer, it
+  tries a snapshot and pushes it to the dashboard
+  farm/bed-snapshot route (CameraSnapshot: printer name/ip/
+  type, capture time, JPEG base64, source
+  "owner_snapshot_url", camera flag). No credentials are in
+  the payload. A printing/paused printer is skipped — its bed
+  is occupied by definition, so its picture cannot prove a
+  vacant bed. A null snapshot (no URL, unreachable URL,
+  non-JPEG, too large) sends nothing. If the dashboard route
+  answers 404 (dashboard older than 0.8.3), the worker logs
+  that once and pauses bed snapshots until restart, instead
+  of spamming the dashboard.
+- DashboardClient: new PushBedSnapshotAsync (bridge-key
+  auth, same outbound-only pattern as every other call).
+- Models: new CameraSnapshot record.
+- GenericAdapter: snapshot via owner-set snapshot_url (above).
+
+What a snapshot does NOT do:
+- It NEVER confirms a bed on its own, and it NEVER sets
+  bed_confirmed on the dashboard. Only a human clicking
+  "Confirm bed vacant from this snapshot" on a fresh
+  snapshot for an idle printer does that (dashboard side).
+- It does not start, stop, or choose any print job, and it
+  does not change key handling, device config, printer
+  adapters' status logic, heartbeat/status formats,
+  FreeConsole tray behaviour, manual Get updates, or the
+  2273 auto-update option.
+
+Everything else unchanged from 2273.
+NOT compiled (no dotnet here), brace-balanced only.

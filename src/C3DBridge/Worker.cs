@@ -30,6 +30,16 @@ namespace C3DBridge;
 
 public sealed class Worker
 {
+    /// <summary>Auto-update guard (2273): true while the bridge
+    /// itself knows a print is running — either a printer it
+    /// polled reported "printing", or it is executing/monitoring
+    /// a dashboard job. Updated every worker tick from the last
+    /// known statuses. It does NOT cover prints started outside
+    /// the bridge (e.g. directly from a printer app) that the
+    /// bridge has not polled yet — that limit is stated in the
+    /// 2273 changes file, not hidden.</summary>
+    public static bool AnyPrinting { get; private set; }
+
     private readonly BridgeConfig _cfg;
     private readonly PrinterRegistry _printers;
     private readonly DashboardClient _dashboard;
@@ -103,6 +113,11 @@ public sealed class Worker
                     statuses = _lastStatuses;
                 }
 
+                // Auto-update guard: refresh from whatever state
+                // this tick knows, so the tray never has to guess.
+                AnyPrinting = _active.Count > 0 ||
+                    statuses.Values.Any(s => string.Equals(s.State, "printing", StringComparison.OrdinalIgnoreCase));
+
                 // 2. Heartbeat (dashboard treats >10 min old as stale).
                 if (_dashboard.HasKey && now - lastHeartbeat >= TimeSpan.FromSeconds(_cfg.HeartbeatIntervalSeconds))
                 {
@@ -138,6 +153,8 @@ public sealed class Worker
                 }
 
                 await MonitorActiveJobsAsync(statuses, ct);
+                if (_dashboard.HasKey && !_dashboard.KeyRejected && !_bedSnapshotEndpointMissing)
+                    await CaptureBedSnapshotsAsync(statuses, ct);
                 _lastStatuses = statuses;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -155,6 +172,14 @@ public sealed class Worker
     }
 
     private Dictionary<string, PrinterStatus> _lastStatuses = new(StringComparer.OrdinalIgnoreCase);
+    // Bed View (2274): last bed-snapshot attempt per printer, and
+    // whether the dashboard Bed View route is missing (404).
+    // Snapshots are idle-printers only, at most once a minute
+    // per printer: a bed picture is only useful as bed-vacant
+    // evidence when the printer is idle, and a printing
+    // printer's bed is occupied by definition.
+    private readonly Dictionary<string, DateTime> _lastBedSnapshotAttempt = new(StringComparer.OrdinalIgnoreCase);
+    private bool _bedSnapshotEndpointMissing;
 
     private bool ShouldLogProblem(string problem)
     {
@@ -332,6 +357,51 @@ public sealed class Worker
             if (live.State != "offline")
             {
                 _active[printerName] = active with { LastSeenOnline = DateTime.UtcNow };
+            }
+        }
+    }
+
+    /// <summary>Bed View capture (2274). For each adapter
+    /// whose printer is currently idle, at most once a minute,
+    /// try the adapter's owner-set snapshot URL and push the
+    /// JPEG to the dashboard bed-snapshot route. A null return
+    /// (no snapshot URL, unreachable URL, non-JPEG, too large)
+    /// means no snapshot is sent — never a placeholder. A
+    /// snapshot arriving at the dashboard NEVER confirms a bed
+    /// on its own; a human must confirm from the image, and
+    /// only a fresh snapshot on an idle printer counts there.
+    /// No credentials are in the payload.</summary>
+    private async Task CaptureBedSnapshotsAsync(
+        IReadOnlyDictionary<string, PrinterStatus> statuses, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        foreach (var adapter in _printers.All)
+        {
+            if (!statuses.TryGetValue(adapter.Name, out var live) ||
+                !string.Equals(live.State, "idle", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (_lastBedSnapshotAttempt.TryGetValue(adapter.Name, out var last) &&
+                now - last < TimeSpan.FromMinutes(1))
+                continue;
+            _lastBedSnapshotAttempt[adapter.Name] = now;
+            byte[]? bytes;
+            try { bytes = await adapter.TryGetSnapshotAsync(ct); }
+            catch { continue; }
+            if (bytes is null) continue;
+            var (ok, status) = await _dashboard.PushBedSnapshotAsync(new CameraSnapshot
+            {
+                PrinterName = adapter.Name,
+                PrinterIp = adapter.Ip,
+                PrinterType = adapter.Type,
+                CapturedUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                SnapshotBase64 = Convert.ToBase64String(bytes),
+                SnapshotSource = "owner_snapshot_url",
+                CameraAvailable = live.CameraAvailable,
+            }, ct);
+            if (!ok && status == System.Net.HttpStatusCode.NotFound)
+            {
+                _bedSnapshotEndpointMissing = true;
+                Program.Log("Bed View: dashboard bed-snapshot route not installed yet (needs dashboard 0.8.3). Snapshots paused until the dashboard is updated.");
             }
         }
     }

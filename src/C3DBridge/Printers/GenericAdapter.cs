@@ -22,5 +22,20 @@ public sealed class GenericAdapter : IPrinterAdapter
         => Task.FromResult((false, $"Generic brand '{_cfg.Type}' — upload not supported yet."));
     public Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct)
         => Task.FromResult((false, $"Generic brand '{_cfg.Type}' — start not supported yet."));
-    public Task<byte[]?> TryGetSnapshotAsync(CancellationToken ct) => Task.FromResult<byte[]?>(null);
+    public async Task<byte[]?> TryGetSnapshotAsync(CancellationToken ct)
+    {
+        // Same rule as every other adapter: a snapshot only
+        // when the owner set a snapshot URL. No URL = no image,
+        // never a guessed URL and never a placeholder.
+        if (string.IsNullOrWhiteSpace(_cfg.SnapshotUrl)) return null;
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            var bytes = await http.GetByteArrayAsync(_cfg.SnapshotUrl, ct);
+            if (bytes.Length < 100 || bytes.Length > 2_000_000) return null;
+            if (bytes[0] != 0xFF || bytes[1] != 0xD8) return null;
+            return bytes;
+        }
+        catch { return null; }
+    }
 }

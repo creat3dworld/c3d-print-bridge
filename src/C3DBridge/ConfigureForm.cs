@@ -53,6 +53,8 @@ public sealed class ConfigureForm : Form
     private readonly TextBox _apiKeyBox = new();
     private readonly TextBox _key = new();
     private readonly TextBox _target = new();
+    private readonly CheckBox _autoUpdate = new();
+    private readonly Panel _autoUpdatePanel = new();
     private readonly Label _portHint = new();
     private readonly Label _status = new();
     private Label _deviceIdLabel = new();
@@ -205,6 +207,16 @@ public sealed class ConfigureForm : Form
         _portHintPanel.Controls.Add(_portHint);
         var flyPanels = new Panel[] { _namePanel, _brandIpPanel, _deviceIdPanel, _loginUserPanel, _loginPassPanel, _apiKeyPanel, _keyPanel, _targetPanel, _portHintPanel };
         foreach (var pn in flyPanels) _flyFlow.Controls.Add(pn);
+        // Auto-update option (2273): a plain checkbox in Bridge
+        // settings only. It is NOT saved on click — like the other
+        // bridge fields, closing the flyout applies it via
+        // SaveToDisk below, so a stray click is never persisted.
+        _autoUpdate.Text = "Automatically update the bridge";
+        _autoUpdate.Left = 0; _autoUpdate.Top = 10; _autoUpdate.Width = 320; _autoUpdate.Height = 28;
+        _autoUpdate.Checked = _initial.AutoUpdate;
+        _autoUpdatePanel.Size = new Size(320, 48); _autoUpdatePanel.Margin = new Padding(0);
+        _autoUpdatePanel.Controls.Add(_autoUpdate);
+        _flyFlow.Controls.Add(_autoUpdatePanel);
 
         // Main list area (fills remaining space, scales with window).
         // No description label above the table: just the table.
@@ -314,7 +326,7 @@ public sealed class ConfigureForm : Form
         _keyLabel.Text = "Dashboard API Key"; _targetLabel.Text = "Dashboard host URL";
         // Bridge panels are the bridge-mode fields; printer panels
         // are the printer-mode fields. FlowLayout reflows them.
-        foreach (var pn in new Panel[] { _keyPanel, _targetPanel, _portHintPanel }) _bridgeControls.Add(pn);
+        foreach (var pn in new Panel[] { _keyPanel, _targetPanel, _portHintPanel, _autoUpdatePanel }) _bridgeControls.Add(pn);
         RefreshList();
         if (_printers.Count > 0) { _list.Items[0].Selected = true; }
         ScaleColumns();
@@ -710,7 +722,7 @@ public sealed class ConfigureForm : Form
         _printers.RemoveAll(p => string.IsNullOrWhiteSpace(p.Ip));
         for (var i = 0; i < _printers.Count; i++) { if (string.IsNullOrWhiteSpace(_printers[i].Name)) _printers[i] = _printers[i] with { Name = _printers[i].Ip.Trim() }; }
         RefreshList();
-        var cfg = _initial with { Printers = _printers, DashboardBaseUrl = string.IsNullOrWhiteSpace(_target.Text) ? _initial.DashboardBaseUrl : _target.Text.Trim() };
+        var cfg = _initial with { Printers = _printers, DashboardBaseUrl = string.IsNullOrWhiteSpace(_target.Text) ? _initial.DashboardBaseUrl : _target.Text.Trim(), AutoUpdate = _autoUpdate.Checked };
         Config.Save(cfg);
         if (!string.IsNullOrWhiteSpace(_key.Text)) Config.StoreKey(_key.Text);
         // Push is the automatic dashboard update: every add or
