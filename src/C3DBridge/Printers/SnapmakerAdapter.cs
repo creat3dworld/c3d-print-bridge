@@ -39,6 +39,7 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
     private readonly PrinterConfig _cfg;
     private readonly int _port;
     private readonly HttpClient _http;
+    private string? _moonrakerToken;
     public string Name => _cfg.Name;
 
     public SnapmakerAdapter(PrinterConfig cfg)
@@ -50,10 +51,33 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
 
     private string Base => $"http://{_cfg.Ip}:{_port}";
 
-    private void AddAuth(HttpRequestMessage req)
+    private async Task<bool> AddAuthAsync(HttpRequestMessage req, CancellationToken ct)
     {
+        if (!string.IsNullOrWhiteSpace(_cfg.PaxxUser) && !string.IsNullOrWhiteSpace(_cfg.PaxxPassword))
+        {
+            if (_moonrakerToken is null)
+            {
+                try
+                {
+                    var body = JsonSerializer.Serialize(new { username = _cfg.PaxxUser, password = _cfg.PaxxPassword });
+                    using var login = new HttpRequestMessage(HttpMethod.Post, Base + "/access/login") { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+                    using var res = await _http.SendAsync(login, ct);
+                    if (!res.IsSuccessStatusCode) return false;
+                    using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+                    string? token = null;
+                    if (doc.RootElement.TryGetProperty("result", out var r) && r.TryGetProperty("token", out var tk)) token = tk.GetString();
+                    else if (doc.RootElement.TryGetProperty("token", out var tk2)) token = tk2.GetString();
+                    if (string.IsNullOrWhiteSpace(token)) return false;
+                    _moonrakerToken = token;
+                }
+                catch { return false; }
+            }
+            req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _moonrakerToken);
+            return true;
+        }
         if (!string.IsNullOrWhiteSpace(_cfg.AccessCode))
             req.Headers.Add("X-Api-Key", _cfg.AccessCode);
+        return true;
     }
 
     public async Task<PrinterStatus> GetStatusAsync(CancellationToken ct)
@@ -62,7 +86,8 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
         {
             var req = new HttpRequestMessage(HttpMethod.Get,
                 Base + "/printer/objects/query?print_stats&virtual_sdcard&display_status");
-            AddAuth(req);
+            if (!await AddAuthAsync(req, ct))
+                return Offline($"Paxx login failed for '{Name}': check the Paxx username/password in Configure.");
             using var res = await _http.SendAsync(req, ct);
             if (!res.IsSuccessStatusCode)
                 return Offline($"Moonraker on '{Name}' answered {(int)res.StatusCode}; check the IP and port.");
@@ -125,7 +150,8 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
             form.Add(new StringContent("false"), "print");
 
             var req = new HttpRequestMessage(HttpMethod.Post, Base + "/server/files/upload") { Content = form };
-            AddAuth(req);
+            if (!await AddAuthAsync(req, ct))
+                return (false, $"Paxx login failed for '{Name}': check the Paxx username/password in Configure.");
             using var res = await _http.SendAsync(req, ct);
             if (!res.IsSuccessStatusCode)
                 return (false, $"Moonraker upload to '{Name}' answered {(int)res.StatusCode}: {Trim(await res.Content.ReadAsStringAsync(ct))}");
@@ -146,7 +172,8 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json"),
             };
-            AddAuth(req);
+            if (!await AddAuthAsync(req, ct))
+                return (false, $"Paxx login failed for '{Name}': check the Paxx username/password in Configure.");
             using var res = await _http.SendAsync(req, ct);
             if (!res.IsSuccessStatusCode)
                 return (false, $"Moonraker start on '{Name}' answered {(int)res.StatusCode}: {Trim(await res.Content.ReadAsStringAsync(ct))}");

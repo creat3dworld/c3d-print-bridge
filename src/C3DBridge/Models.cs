@@ -34,6 +34,12 @@ public sealed record PrinterConfig
     /// Snapmaker only: Moonraker/API key if the printer requires one.
     /// Stored ONLY in the local config file on the PC. Never committed.</summary>
     [JsonPropertyName("access_code")] public string? AccessCode { get; init; }
+    /// <summary>Snapmaker Paxx API username, when created on the printer.
+    /// Stored ONLY in the local config file on the PC. Never committed.</summary>
+    [JsonPropertyName("paxx_user")] public string? PaxxUser { get; init; }
+    /// <summary>Snapmaker Paxx API password, when created on the printer.
+    /// Stored ONLY in the local config file on the PC. Never committed.</summary>
+    [JsonPropertyName("paxx_password")] public string? PaxxPassword { get; init; }
     /// <summary>True when this printer has a camera the bridge could
     /// report a feed from. False/missing means no camera recorded.</summary>
     [JsonPropertyName("camera")] public bool Camera { get; init; }

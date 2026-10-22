@@ -36,6 +36,8 @@ public sealed class ConfigureForm : Form
     private readonly CheckBox _showAccess = new();
     private readonly CheckBox _camera = new();
     private readonly TextBox _key = new();
+    private readonly TextBox _paxxUser = new();
+    private readonly TextBox _paxxPass = new();
     private readonly TextBox _target = new();
     private readonly Label _portHint = new();
     private readonly Label _macLabel = new();
@@ -49,8 +51,8 @@ public sealed class ConfigureForm : Form
         Text = "C3D Print Bridge — Configure";
         AutoScaleMode = AutoScaleMode.Dpi;
         Width = 780;
-        Height = 740;
-        MinimumSize = new Size(720, 680);
+        Height = 860;
+        MinimumSize = new Size(720, 800);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
@@ -91,42 +93,45 @@ public sealed class ConfigureForm : Form
         Controls.Add(_macLabel);
         AddField("Serial (Bambu, from printer screen)", _serial, x, 220);
         AddField("Access code (Bambu / U1 Moonraker key, from printer screen or your saved key)", _access, x, 282);
+        AddField("Paxx username (Snapmaker U1, from Paxx API settings)", _paxxUser, x, 348);
+        AddField("Paxx password (Snapmaker U1, from Paxx API settings)", _paxxPass, x, 414);
+        _paxxPass.UseSystemPasswordChar = true;
         _access.UseSystemPasswordChar = true;
-        _showAccess.Text = "Show access code"; _showAccess.Left = x; _showAccess.Top = 318; _showAccess.Width = 200;
-        _showAccess.CheckedChanged += (_, _) => _access.UseSystemPasswordChar = !_showAccess.Checked;
+        _showAccess.Text = "Show access / Paxx passwords"; _showAccess.Left = x; _showAccess.Top = 450; _showAccess.Width = 200;
+        _showAccess.CheckedChanged += (_, _) => { _access.UseSystemPasswordChar = !_showAccess.Checked; _paxxPass.UseSystemPasswordChar = !_showAccess.Checked; };
         Controls.Add(_showAccess);
-        _camera.Text = "Has camera"; _camera.Left = x; _camera.Top = 344; _camera.Width = 200; _camera.Checked = true;
+        _camera.Text = "Has camera"; _camera.Left = x; _camera.Top = 476; _camera.Width = 200; _camera.Checked = true;
         Controls.Add(_camera);
 
-        var btnHint = new Label { Text = "Add new clears these fields for a new printer. Apply to list saves these fields into the printers list on the left. Neither saves to disk until you click Save below.", Left = x, Top = 372, Width = 440, Height = 28 };
+        var btnHint = new Label { Text = "Add new clears these fields for a new printer. Apply to list saves these fields into the printers list on the left. Neither saves to disk until you click Save below.", Left = x, Top = 504, Width = 440, Height = 28 };
         Controls.Add(btnHint);
-        var addBtn = new Button { Text = "Add new", Left = x, Top = 404, Width = 140, Height = 32 };
+        var addBtn = new Button { Text = "Add new", Left = x, Top = 536, Width = 140, Height = 32 };
         addBtn.Click += (_, _) => { _editingIndex = -1; _list.ClearSelected(); ClearFields(); _name.Focus(); };
         Controls.Add(addBtn);
-        var applyBtn = new Button { Text = "Apply to list", Left = x + 150, Top = 404, Width = 140, Height = 32 };
+        var applyBtn = new Button { Text = "Apply to list", Left = x + 150, Top = 536, Width = 140, Height = 32 };
         applyBtn.Click += (_, _) => ApplyFields();
         Controls.Add(applyBtn);
 
-        AddField("Dashboard API key (leave blank to keep current)", _key, x, 472);
+        AddField("Dashboard API key (leave blank to keep current)", _key, x, 602);
         _key.UseSystemPasswordChar = true;
         var keyHint = new Label
         {
             Text = hasKey ? "A key is already stored. Only type a new one to replace it."
                 : "No key stored yet. Paste the key from the dashboard Bridge key page.",
-            Left = x, Top = 498, Width = 440, Height = 30,
+            Left = x, Top = 628, Width = 440, Height = 30,
         };
         Controls.Add(keyHint);
 
-        AddField("Dashboard host URL - where the bridge sends status", _target, x, 554);
+        AddField("Dashboard host URL - where the bridge sends status", _target, x, 684);
         _target.Text = _initial.DashboardBaseUrl;
         _target.TextChanged += (_, _) => UpdatePortHint();
-        _portHint.Left = x; _portHint.Top = 580; _portHint.Width = 440; _portHint.Height = 28; _portHint.ForeColor = System.Drawing.Color.Gray;
+        _portHint.Left = x; _portHint.Top = 710; _portHint.Width = 440; _portHint.Height = 28; _portHint.ForeColor = System.Drawing.Color.Gray;
         Controls.Add(_portHint);
         UpdatePortHint();
-        var saveBtn = new Button { Text = "Save", Left = 460, Top = 620, Width = 100, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+        var saveBtn = new Button { Text = "Save", Left = 460, Top = 750, Width = 100, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
         saveBtn.Click += (_, _) => SaveAndClose();
         Controls.Add(saveBtn);
-        var cancelBtn = new Button { Text = "Cancel", Left = 570, Top = 620, Width = 100, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+        var cancelBtn = new Button { Text = "Cancel", Left = 570, Top = 750, Width = 100, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
         cancelBtn.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         Controls.Add(cancelBtn);
 
@@ -173,6 +178,8 @@ public sealed class ConfigureForm : Form
         _ip.Text = p.Ip;
         _serial.Text = p.Serial ?? "";
         _access.Text = p.AccessCode ?? "";
+        _paxxUser.Text = p.PaxxUser ?? "";
+        _paxxPass.Text = p.PaxxPassword ?? "";
         _camera.Checked = p.Camera;
         _macLabel.Text = string.IsNullOrWhiteSpace(p.Mac) ? "MAC: not known yet" : $"MAC: {p.Mac}";
     }
@@ -216,9 +223,12 @@ public sealed class ConfigureForm : Form
             Name = name, Type = type, Ip = ip,
             Serial = string.IsNullOrWhiteSpace(_serial.Text) ? null : _serial.Text.Trim(),
             AccessCode = string.IsNullOrWhiteSpace(_access.Text) ? null : _access.Text.Trim(),
+            PaxxUser = string.IsNullOrWhiteSpace(_paxxUser.Text) ? null : _paxxUser.Text.Trim(),
+            PaxxPassword = string.IsNullOrWhiteSpace(_paxxPass.Text) ? null : _paxxPass.Text,
             Camera = _camera.Checked,
             SnapshotUrl = _editingIndex >= 0 ? _printers[_editingIndex].SnapshotUrl : null,
             Port = _editingIndex >= 0 ? _printers[_editingIndex].Port : null,
+            Mac = _editingIndex >= 0 ? _printers[_editingIndex].Mac : null,
         };
         if (_editingIndex >= 0) _printers[_editingIndex] = printer;
         else { _printers.Add(printer); _editingIndex = _printers.Count - 1; }
