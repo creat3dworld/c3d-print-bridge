@@ -1,5 +1,7 @@
 # C3D Print Bridge — setup guide for the shop PC
 
+If PowerShell says running scripts is disabled on this system, double-click `Enable-Scripts.bat` first (it runs `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force` for you), or run the installer via `Run-Installer.bat`, which already uses `-ExecutionPolicy Bypass`.
+
 Plain language, start to finish. The bridge is a small program that
 runs on the shop PC and relays between the home printers and the
 C3D Shipping dashboard on creat3dworld.com. It does NOT decide
@@ -160,7 +162,7 @@ editing by hand.
 You can still edit the file by hand instead, if you prefer:
 
 ```
-C:\Users\<you>\C3DBridge\app\bridge-config.json
+C:\C3D_Bridge\app\bridge-config.json
 ```
 
 The installer created it from the example. Fill in each printer:
@@ -331,7 +333,7 @@ verified against docs, not yet against the real U1.
 - Stop it for now: `Stop-ScheduledTask -TaskName 'C3D Print Bridge'`
 - Stop it starting at sign-in: `Disable-ScheduledTask -TaskName 'C3D Print Bridge'`
 - Remove it completely: delete the Scheduled Task, then delete
-  the `C:\Users\<you>\C3DBridge` folder. That also deletes the
+  the `C:\C3D_Bridge` folder. That also deletes the
   stored API key and the printer access codes from the PC.
 
 ## Where secrets live (and where they never do)

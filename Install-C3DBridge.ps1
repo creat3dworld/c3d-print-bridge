@@ -1,4 +1,7 @@
 # C3D Print Bridge v1.1.0 — installer for the shop PC (Windows).
+# If PowerShell says running scripts is disabled, first run:
+#   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+# (or double-click Enable-Scripts.bat, which does that for you).
 #
 # Run AFTER the code is on the PC (see SETUP.md for the one-paste
 # command that fetches it). This script:

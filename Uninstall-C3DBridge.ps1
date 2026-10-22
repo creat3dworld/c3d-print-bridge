@@ -1,4 +1,7 @@
 # C3D Print Bridge — uninstaller (Windows).
+# If PowerShell says running scripts is disabled, first run:
+#   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+# (or double-click Enable-Scripts.bat, which does that for you).
 #
 # Removes the Scheduled Task, stops the bridge, and deletes the install
 # folder (default C:\C3D_Bridge). With -KeepConfig, bridge-config.json
