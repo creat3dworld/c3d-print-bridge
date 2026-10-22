@@ -21,10 +21,10 @@ public static class SecureStore
     }
 
     [DllImport("crypt32.dll", SetLastError = true)]
-    private static extern bool CryptProtectData(ref DataBlob pDataIn, string? szDataDescr, ref DataBlob pOptionalEntropy, IntPtr pvReserved, IntPtr pPromptStruct, uint dwFlags, out DataBlob pDataOut);
+    private static extern bool CryptProtectData(ref DataBlob pDataIn, string? szDataDescr, IntPtr pOptionalEntropy, IntPtr pvReserved, IntPtr pPromptStruct, uint dwFlags, out DataBlob pDataOut);
 
     [DllImport("crypt32.dll", SetLastError = true)]
-    private static extern bool CryptUnprotectData(ref DataBlob pDataIn, out string? pszDataDescr, ref DataBlob pOptionalEntropy, IntPtr pvReserved, IntPtr pPromptStruct, uint dwFlags, out DataBlob pDataOut);
+    private static extern bool CryptUnprotectData(ref DataBlob pDataIn, out string? pszDataDescr, IntPtr pOptionalEntropy, IntPtr pvReserved, IntPtr pPromptStruct, uint dwFlags, out DataBlob pDataOut);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr LocalFree(IntPtr hMem);
@@ -39,8 +39,7 @@ public static class SecureStore
             var inBlob = ToBlob(bytes);
             try
             {
-                var entropy = new DataBlob();
-                if (!CryptProtectData(ref inBlob, null, ref entropy, IntPtr.Zero, IntPtr.Zero, 0x01, out var outBlob))
+                if (!CryptProtectData(ref inBlob, null, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0x01, out var outBlob))
                     return plain;
                 try { return Prefix + Convert.ToBase64String(FromBlob(outBlob)); }
                 finally { LocalFree(outBlob.pbData); }
@@ -61,8 +60,7 @@ public static class SecureStore
             var inBlob = ToBlob(bytes);
             try
             {
-                var entropy = new DataBlob();
-                if (!CryptUnprotectData(ref inBlob, out _, ref entropy, IntPtr.Zero, IntPtr.Zero, 0x01, out var outBlob))
+                if (!CryptUnprotectData(ref inBlob, out _, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0x01, out var outBlob))
                     return stored;
                 try { return System.Text.Encoding.UTF8.GetString(FromBlob(outBlob)); }
                 finally { LocalFree(outBlob.pbData); }

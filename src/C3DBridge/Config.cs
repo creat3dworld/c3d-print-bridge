@@ -68,7 +68,7 @@ public static class Config
     /// the separate bridge-key file.</summary>
     public static void Save(BridgeConfig cfg)
     {
-        var safe = cfg with { Printers = cfg.Printers.Select(pr => pr with { AccessCode = string.IsNullOrWhiteSpace(pr.AccessCode) ? pr.AccessCode : SecureStore.Protect(pr.AccessCode), PaxxPassword = string.IsNullOrWhiteSpace(pr.PaxxPassword) ? pr.PaxxPassword : SecureStore.Protect(pr.PaxxPassword) }).ToList() };
+        var safe = cfg with { Printers = cfg.Printers.Select(pr => pr with { AccessCode = string.IsNullOrWhiteSpace(pr.AccessCode) || pr.AccessCode.StartsWith("dpapi:", StringComparison.Ordinal) ? pr.AccessCode : SecureStore.Protect(pr.AccessCode), PaxxPassword = string.IsNullOrWhiteSpace(pr.PaxxPassword) || pr.PaxxPassword.StartsWith("dpapi:", StringComparison.Ordinal) ? pr.PaxxPassword : SecureStore.Protect(pr.PaxxPassword) }).ToList() };
         File.WriteAllText(ConfigPath, JsonSerializer.Serialize(safe, JsonOptions));
         RestrictFile(ConfigPath);
     }
@@ -96,7 +96,9 @@ public static class Config
     /// local key file. Overwrites any previous key (rotation).</summary>
     public static void StoreKey(string key)
     {
-        File.WriteAllText(KeyPath, SecureStore.Protect(key.Trim()) + Environment.NewLine);
+        var k = key.Trim();
+        if (!k.StartsWith("dpapi:", StringComparison.Ordinal)) k = SecureStore.Protect(k);
+        File.WriteAllText(KeyPath, k + Environment.NewLine);
         RestrictFile(KeyPath);
     }
 

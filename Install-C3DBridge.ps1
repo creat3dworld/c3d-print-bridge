@@ -160,9 +160,17 @@ Write-Host "Build log: $buildLog"
 if (Test-Path $buildLog) { Get-Content $buildLog | ForEach-Object { Write-Host $_ } }
 $publishExit = $LASTEXITCODE
 if (Test-Path $preserveDir) {
+    $hadKey = Test-Path (Join-Path $preserveDir 'bridge-key.txt')
+    $hadCfg = Test-Path (Join-Path $preserveDir 'bridge-config.json')
     Copy-Item (Join-Path $preserveDir 'bridge-config.json') $appDir -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $preserveDir 'bridge-key.txt') $appDir -Force -ErrorAction SilentlyContinue
-    Remove-Item $preserveDir -Recurse -Force -ErrorAction SilentlyContinue
+    $keyRestored = (-not $hadKey) -or (Test-Path (Join-Path $appDir 'bridge-key.txt'))
+    $cfgRestored = (-not $hadCfg) -or (Test-Path (Join-Path $appDir 'bridge-config.json'))
+    if ($keyRestored -and $cfgRestored) {
+        Remove-Item $preserveDir -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Host 'WARNING: Config/key restore did not verify. The preserved copies were left in place so nothing is silently lost. Re-enter the key in Configure if the bridge reports no key stored.' -ForegroundColor Yellow
+    }
 }
 if ($publishExit -ne 0 -or -not (Test-Path (Join-Path $appDir 'C3DBridge.exe'))) {
     if (Test-Path $preserveApp) {

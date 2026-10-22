@@ -27,7 +27,8 @@ public sealed class ConfigureForm : Form
     private readonly List<PrinterConfig> _printers;
     private int _editingIndex = -1;
 
-    private readonly ListBox _list = new();
+    private readonly ListView _list = new();
+    private readonly Panel _rightPanel = new();
     private readonly TextBox _name = new();
     private readonly ComboBox _type = new();
     private readonly TextBox _ip = new();
@@ -50,93 +51,126 @@ public sealed class ConfigureForm : Form
 
         Text = "C3D Print Bridge — Configure";
         AutoScaleMode = AutoScaleMode.Dpi;
-        Width = 780;
-        Height = 860;
-        MinimumSize = new Size(720, 800);
-        StartPosition = FormStartPosition.CenterScreen;
+        Font = new System.Drawing.Font("Segoe UI", 9);
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
+        StartPosition = FormStartPosition.CenterScreen;
+        // Fit on screen: never taller/wider than the working area, so the
+        // title bar and corners are always grabbable. Minimum is low so
+        // the form can be resized down, and the right panel scrolls.
+        var wa = Screen.PrimaryScreen?.WorkingArea ?? new System.Drawing.Rectangle(0, 0, 960, 720);
+        Width = Math.Min(960, wa.Width - 20);
+        Height = Math.Min(720, wa.Height - 20);
+        MinimumSize = new Size(640, 480);
+        Left = wa.Left + Math.Max(0, (wa.Width - Width) / 2);
+        Top = wa.Top + Math.Max(0, (wa.Height - Height) / 2);
 
-        var listLabel = new Label { Text = "Printers", Left = 12, Top = 10, Width = 240 };
-        _list.Left = 12; _list.Top = 36; _list.Width = 240; _list.Height = 320; _list.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Bottom;
+        var accent = new Panel { Dock = DockStyle.Top, Height = 6, BackColor = System.Drawing.Color.FromArgb(0, 150, 136) };
+        Controls.Add(accent);
+        // Left panel: printers list
+        var leftPanel = new Panel { Dock = DockStyle.Left, Width = 480, Padding = new Padding(12) };
+        var listLabel = new Label { Text = "Printers", Left = 0, Top = 0, Width = 440, Height = 20 };
+        leftPanel.Controls.Add(listLabel);
+        _list.View = View.Details;
+        _list.FullRowSelect = true;
+        _list.GridLines = true;
+        _list.MultiSelect = false;
+        _list.Columns.Add("Name", 140);
+        _list.Columns.Add("Type", 90);
+        _list.Columns.Add("IP address", 130);
+        _list.Columns.Add("Status", 110);
+        _list.Left = 0; _list.Top = 24; _list.Width = 456; _list.Height = 320;
+        _list.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Bottom | AnchorStyles.Right;
         _list.SelectedIndexChanged += (_, _) =>
         {
-            if (_list.SelectedIndex >= 0 && _list.SelectedIndex < _printers.Count)
+            if (_list.SelectedIndices.Count > 0 && _list.SelectedIndices[0] < _printers.Count)
             {
-                _editingIndex = _list.SelectedIndex;
+                _editingIndex = _list.SelectedIndices[0];
                 LoadFields(_printers[_editingIndex]);
             }
         };
-        Controls.Add(listLabel);
-        Controls.Add(_list);
-
-        var scanBtn = new Button { Text = "Scan WiFi for printers", Left = 12, Top = 366, Width = 240, Height = 32 };
+        leftPanel.Controls.Add(_list);
+        var scanBtn = new Button { Text = "Scan WiFi for printers", Left = 0, Top = 354, Width = 220, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
         scanBtn.Click += async (_, _) => await ScanAsync(scanBtn);
-        Controls.Add(scanBtn);
-
-        var deleteBtn = new Button { Text = "Delete selected", Left = 12, Top = 406, Width = 240, Height = 32 };
+        leftPanel.Controls.Add(scanBtn);
+        var deleteBtn = new Button { Text = "Delete selected", Left = 230, Top = 354, Width = 220, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Left };
         deleteBtn.Click += (_, _) => DeleteSelected();
-        Controls.Add(deleteBtn);
-
-        _status.Left = 12; _status.Top = 448; _status.Width = 240; _status.Height = 120;
+        leftPanel.Controls.Add(deleteBtn);
+        _status.Left = 0; _status.Top = 394; _status.Width = 456; _status.Height = 100; _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         _status.Text = "Scan only sees printers on this PC's own network. A found port is a candidate, not a confirmed printer.";
-        Controls.Add(_status);
+        leftPanel.Controls.Add(_status);
+        Controls.Add(leftPanel);
 
-        var x = 272;
+        // Bottom panel: Save/Cancel always visible, never scrolled off
+        var bottomPanel = new Panel { Dock = DockStyle.Bottom, Height = 56, Padding = new Padding(12) };
+        var saveHint = new Label { Text = "Save writes everything to disk.", Left = 0, Top = 16, Width = 300 };
+        bottomPanel.Controls.Add(saveHint);
+        var saveBtn = new Button { Text = "Save", Width = 100, Height = 32, Anchor = AnchorStyles.Top | AnchorStyles.Right, BackColor = System.Drawing.Color.FromArgb(0, 120, 215), ForeColor = System.Drawing.Color.White, FlatStyle = FlatStyle.Flat, UseVisualStyleBackColor = false };
+        saveBtn.Left = bottomPanel.Width - 230; saveBtn.Top = 12;
+        saveBtn.Click += (_, _) => SaveAndClose();
+        bottomPanel.Controls.Add(saveBtn);
+        var cancelBtn = new Button { Text = "Cancel", Width = 100, Height = 32, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+        cancelBtn.Left = bottomPanel.Width - 120; cancelBtn.Top = 12;
+        cancelBtn.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
+        bottomPanel.Controls.Add(cancelBtn);
+        // Keep Save/Cancel at the right edge when the form resizes
+        bottomPanel.Resize += (_, _) => { saveBtn.Left = bottomPanel.Width - 230; cancelBtn.Left = bottomPanel.Width - 120; };
+        Controls.Add(bottomPanel);
+
+        // Right panel: scrollable fields, so a short form still reaches every field
+        _rightPanel.Dock = DockStyle.Fill;
+        _rightPanel.AutoScroll = true;
+        _rightPanel.Padding = new Padding(12);
+        Controls.Add(_rightPanel);
+        // Bring left/bottom panels to front in dock order
+        leftPanel.BringToFront(); bottomPanel.BringToFront();
+
+        var x = 12;
         AddField("Name", _name, x, 36);
-        var typeLabel = new Label { Text = "Type", Left = x, Top = 76, Width = 440 };
-        _type.Left = x; _type.Top = 96; _type.Width = 440; _type.DropDownStyle = ComboBoxStyle.DropDownList; _type.DropDownHeight = 80; _type.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        var typeLabel = new Label { Text = "Type", Left = x, Top = 76, Width = 400 };
+        _type.Left = x; _type.Top = 96; _type.Width = 400; _type.DropDownStyle = ComboBoxStyle.DropDownList; _type.DropDownHeight = 80; _type.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _type.Items.Add("bambu"); _type.Items.Add("snapmaker"); _type.SelectedIndex = 0;
-        Controls.Add(typeLabel); Controls.Add(_type);
+        _rightPanel.Controls.Add(typeLabel); _rightPanel.Controls.Add(_type);
         AddField("IP address", _ip, x, 158);
-        _macLabel.Left = x; _macLabel.Top = 184; _macLabel.Width = 440; _macLabel.Height = 16; _macLabel.ForeColor = System.Drawing.Color.Gray; _macLabel.Text = "MAC: not known yet";
-        Controls.Add(_macLabel);
+        _macLabel.Left = x; _macLabel.Top = 184; _macLabel.Width = 400; _macLabel.Height = 16; _macLabel.ForeColor = System.Drawing.Color.Gray; _macLabel.Text = "MAC: not known yet";
+        _rightPanel.Controls.Add(_macLabel);
         AddField("Serial (Bambu, from printer screen)", _serial, x, 220);
         AddField("Access code (Bambu / U1 Moonraker key, from printer screen or your saved key)", _access, x, 282);
+        _access.UseSystemPasswordChar = true;
         AddField("Paxx username (Snapmaker U1, from Paxx API settings)", _paxxUser, x, 348);
         AddField("Paxx password (Snapmaker U1, from Paxx API settings)", _paxxPass, x, 414);
         _paxxPass.UseSystemPasswordChar = true;
-        _access.UseSystemPasswordChar = true;
-        _showAccess.Text = "Show access / Paxx passwords"; _showAccess.Left = x; _showAccess.Top = 450; _showAccess.Width = 200;
+        _showAccess.Text = "Show access / Paxx passwords"; _showAccess.Left = x; _showAccess.Top = 450; _showAccess.Width = 300;
         _showAccess.CheckedChanged += (_, _) => { _access.UseSystemPasswordChar = !_showAccess.Checked; _paxxPass.UseSystemPasswordChar = !_showAccess.Checked; };
-        Controls.Add(_showAccess);
+        _rightPanel.Controls.Add(_showAccess);
         _camera.Text = "Has camera"; _camera.Left = x; _camera.Top = 476; _camera.Width = 200; _camera.Checked = true;
-        Controls.Add(_camera);
-
-        var btnHint = new Label { Text = "Add new clears these fields for a new printer. Apply to list saves these fields into the printers list on the left. Neither saves to disk until you click Save below.", Left = x, Top = 504, Width = 440, Height = 28 };
-        Controls.Add(btnHint);
-        var addBtn = new Button { Text = "Add new", Left = x, Top = 536, Width = 140, Height = 32 };
-        addBtn.Click += (_, _) => { _editingIndex = -1; _list.ClearSelected(); ClearFields(); _name.Focus(); };
-        Controls.Add(addBtn);
-        var applyBtn = new Button { Text = "Apply to list", Left = x + 150, Top = 536, Width = 140, Height = 32 };
+        _rightPanel.Controls.Add(_camera);
+        var btnHint = new Label { Text = "Add new clears these fields for a new printer. Apply to list saves these fields into the printers list on the left. Neither saves to disk until you click Save below.", Left = x, Top = 504, Width = 400, Height = 42 };
+        _rightPanel.Controls.Add(btnHint);
+        var addBtn = new Button { Text = "Add new", Left = x, Top = 552, Width = 140, Height = 32 };
+        addBtn.Click += (_, _) => { _editingIndex = -1; _list.SelectedItems.Clear(); ClearFields(); _name.Focus(); };
+        _rightPanel.Controls.Add(addBtn);
+        var applyBtn = new Button { Text = "Apply to list", Left = x + 150, Top = 552, Width = 140, Height = 32 };
         applyBtn.Click += (_, _) => ApplyFields();
-        Controls.Add(applyBtn);
-
-        AddField("Dashboard API key (leave blank to keep current)", _key, x, 602);
+        _rightPanel.Controls.Add(applyBtn);
+        AddField("Dashboard API key (leave blank to keep current)", _key, x, 618);
         _key.UseSystemPasswordChar = true;
         var keyHint = new Label
         {
             Text = hasKey ? "A key is already stored. Only type a new one to replace it."
                 : "No key stored yet. Paste the key from the dashboard Bridge key page.",
-            Left = x, Top = 628, Width = 440, Height = 30,
+            Left = x, Top = 644, Width = 400, Height = 30,
         };
-        Controls.Add(keyHint);
-
-        AddField("Dashboard host URL - where the bridge sends status", _target, x, 684);
+        _rightPanel.Controls.Add(keyHint);
+        AddField("Dashboard host URL - where the bridge sends status", _target, x, 700);
         _target.Text = _initial.DashboardBaseUrl;
         _target.TextChanged += (_, _) => UpdatePortHint();
-        _portHint.Left = x; _portHint.Top = 710; _portHint.Width = 440; _portHint.Height = 28; _portHint.ForeColor = System.Drawing.Color.Gray;
-        Controls.Add(_portHint);
+        _portHint.Left = x; _portHint.Top = 726; _portHint.Width = 400; _portHint.Height = 28; _portHint.ForeColor = System.Drawing.Color.Gray;
+        _rightPanel.Controls.Add(_portHint);
         UpdatePortHint();
-        var saveBtn = new Button { Text = "Save", Left = 460, Top = 750, Width = 100, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
-        saveBtn.Click += (_, _) => SaveAndClose();
-        Controls.Add(saveBtn);
-        var cancelBtn = new Button { Text = "Cancel", Left = 570, Top = 750, Width = 100, Height = 32, Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
-        cancelBtn.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
-        Controls.Add(cancelBtn);
 
         RefreshList();
-        if (_printers.Count > 0) { _list.SelectedIndex = 0; }
+        if (_printers.Count > 0) { _list.Items[0].Selected = true; }
     }
 
     private void UpdatePortHint()
@@ -154,21 +188,29 @@ public sealed class ConfigureForm : Form
 
     private void AddField(string label, TextBox box, int x, int top)
     {
-        var l = new Label { Text = label, Left = x, Top = top - 20, Width = 440 };
-        box.Left = x; box.Top = top; box.Width = 440; box.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        Controls.Add(l); Controls.Add(box);
+        var l = new Label { Text = label, Left = x, Top = top - 20, Width = 400 };
+        box.Left = x; box.Top = top; box.Width = 400; box.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        _rightPanel.Controls.Add(l); _rightPanel.Controls.Add(box);
     }
 
     private void RefreshList()
     {
-        var selected = _list.SelectedIndex;
+        int selected = _list.SelectedIndices.Count > 0 ? _list.SelectedIndices[0] : -1;
         _list.Items.Clear();
         foreach (var p in _printers)
         {
             var name = string.IsNullOrWhiteSpace(p.Name) ? "(fill in a name)" : p.Name;
-            _list.Items.Add($"{name} ({p.Type}) — {p.Ip}");
+            var ready = p.Type == "bambu" ? (!string.IsNullOrWhiteSpace(p.Serial) && !string.IsNullOrWhiteSpace(p.AccessCode))
+                : (!string.IsNullOrWhiteSpace(p.PaxxUser) && !string.IsNullOrWhiteSpace(p.PaxxPassword)) || !string.IsNullOrWhiteSpace(p.AccessCode);
+            var item = new ListViewItem(name);
+            item.SubItems.Add(p.Type);
+            item.SubItems.Add(p.Ip);
+            var statusItem = new ListViewItem.ListViewSubItem(item, ready ? "Ready" : "Needs setup");
+            statusItem.ForeColor = ready ? System.Drawing.Color.FromArgb(0, 128, 0) : System.Drawing.Color.FromArgb(200, 110, 0);
+            item.SubItems.Add(statusItem);
+            _list.Items.Add(item);
         }
-        if (selected >= 0 && selected < _list.Items.Count) _list.SelectedIndex = selected;
+        if (selected >= 0 && selected < _list.Items.Count) _list.Items[selected].Selected = true;
     }
 
     private void LoadFields(PrinterConfig p)
@@ -187,7 +229,8 @@ public sealed class ConfigureForm : Form
     private void ClearFields()
     {
         _name.Text = ""; _type.SelectedIndex = 0; _ip.Text = "";
-        _serial.Text = ""; _access.Text = ""; _camera.Checked = true;
+        _serial.Text = ""; _access.Text = ""; _paxxUser.Text = ""; _paxxPass.Text = ""; _camera.Checked = true;
+        _macLabel.Text = "MAC: not known yet";
     }
 
     private bool ApplyFields()
@@ -233,18 +276,18 @@ public sealed class ConfigureForm : Form
         if (_editingIndex >= 0) _printers[_editingIndex] = printer;
         else { _printers.Add(printer); _editingIndex = _printers.Count - 1; }
         RefreshList();
-        _list.SelectedIndex = _editingIndex;
+        if (_editingIndex >= 0 && _editingIndex < _list.Items.Count) _list.Items[_editingIndex].Selected = true;
         return true;
     }
 
     private void DeleteSelected()
     {
-        if (_list.SelectedIndex < 0 || _list.SelectedIndex >= _printers.Count) return;
-        var p = _printers[_list.SelectedIndex];
+        if (_list.SelectedIndices.Count == 0 || _list.SelectedIndices[0] >= _printers.Count) return;
+        var p = _printers[_list.SelectedIndices[0]];
         var answer = MessageBox.Show($"Delete printer '{p.Name}' from the bridge config? This does not touch the printer itself.",
             "C3D Print Bridge", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         if (answer != DialogResult.Yes) return;
-        _printers.RemoveAt(_list.SelectedIndex);
+        _printers.RemoveAt(_list.SelectedIndices[0]);
         _editingIndex = -1;
         ClearFields();
         RefreshList();
@@ -291,13 +334,14 @@ public sealed class ConfigureForm : Form
                 {
                     if (_printers.Any(p => string.Equals(p.Ip, c.Ip, StringComparison.OrdinalIgnoreCase))) continue;
                 }
-                var printer = new PrinterConfig { Name = $"Candidate {c.Ip}", Type = c.Kind, Ip = c.Ip, Camera = true, Mac = mac };
+                var printer = new PrinterConfig { Name = "", Type = c.Kind, Ip = c.Ip, Camera = true, Mac = mac };
+                printer = printer with { Name = AutoName(printer) };
                 _printers.Add(printer);
                 added++;
             }
             RefreshList();
             _status.Text = added > 0 || updated > 0
-                ? $"Found {candidates.Count} port-open device(s). These are candidates, not confirmed printers. {added} new candidate(s) added, {updated} known printer(s) moved to a new IP by MAC. Select a candidate, fill in serial + access code for Bambu (or Moonraker key for U1), Apply to list, then Save. Delete any that are not printers."
+                ? $"Found {candidates.Count} port-open device(s). {added} new printer(s) added with model names from their IP, {updated} known printer(s) moved to a new IP by MAC. Select a printer, fill in serial + access code for Bambu (or Moonraker key / Paxx login for U1), Apply to list, then Save. Delete any that are not printers."
                 : $"Found {candidates.Count} candidate(s), all already in the list. A port being open is not proof it is a printer.";
         }
         catch (Exception ex)
