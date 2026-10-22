@@ -1,0 +1,42 @@
+C3D Print Bridge - version 2026.1021.2262
+Configure window rebuild (vs 2026.1021.2261):
+- Buttons under Scan WiFi were invisible, and Pull from dashboard
+  was cut in half with the flyout open. Both rows now live in a
+  docked 2-row x 4-column grid at the bottom of the main panel,
+  sized by the layout engine, never by absolute Top math — so no
+  button can be pushed off-screen or cut in half again.
+- Save / Cancel are GONE from the main screen. Every change now
+  writes to disk immediately: flyout close, Scan, Delete, and
+  Pull from dashboard all save at once. Closing the window can
+  no longer discard anything, and the tray still restarts the
+  relay loop on close. No popup blocks a save for a Bambu missing
+  a Device ID / Access code — it just stays offline.
+- Logo moved to the top-left (clickable to creat3dworld.com),
+  with "Changes save to disk automatically." under the title.
+- Flyout ghosting fixed: the flyout is double-buffered and every
+  mode switch / open / close now forces a full repaint
+  (Invalidate + Update) and resets the scroll position, instead
+  of leaving the old fields painted on top until the window was
+  moved. Mode switches hide all fields first, then show only the
+  new mode's fields.
+- Labels are just field names now — no description text:
+  "Printers — ..." table description removed, Name label is just
+  "Name", the generic-login description for Other is gone, and
+  the MAC / camera rows are gone from the flyout.
+- Brand column and dropdown read "Brand" (not Type/brand);
+  brand names display capitalized — Bambu, Snapmaker, Other —
+  while the code behind them stays lower-case as before.
+  IP label and column read "IP Address" (capital A).
+- Brand and IP boxes are shorter (152px each) and sit
+  side-by-side on one row, shrinking the flyout.
+- Camera Enabled checkbox removed: cameras are always assumed
+  on, as all printers have them.
+- Password fields are masked with an eye button (👁) to reveal
+  them, for every brand including Bambu — the old Show-password
+  checkbox is gone.
+- Other brand: API Key and Password are now separate fields
+  (Password + API Key), instead of one combined field.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.
