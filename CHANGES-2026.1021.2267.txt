@@ -1,0 +1,10 @@
+C3D Print Bridge - version 2026.1021.2267
+Fix for 2266: flyout did not appear at all.
+- Root cause: the flyout panel was built (title, close button,
+  FlowLayout fields) but never added to the form's Controls,
+  so ShowFlyout setting Visible=true had nothing to show.
+  Added Controls.Add(_flyout) after Controls.Add(main), so
+  Dock Right takes the right edge and the main list shrinks.
+- Everything else is unchanged from 2266: 2264 FlowLayout
+  flyout with fixed-size 320x48 field panels, installer
+  restore-on-failed-project-check fix, Scan all-subnets.

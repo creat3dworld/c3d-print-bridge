@@ -283,6 +283,11 @@ public sealed class ConfigureForm : Form
             _list.Height = Math.Max(100, main.ClientSize.Height - buttonPanel.Height - 24);
         };
         Controls.Add(main);
+        // The flyout MUST be added to the form, or it can never
+        // appear at all — this line was missing in 2266, which is
+        // why the flyout did not show on 2266. Added after main
+        // so Dock Right takes the right edge and main shrinks.
+        Controls.Add(_flyout);
         // Flyout fields (created once, laid out by the FlowLayoutPanel)
         _nameLabel.Text = "Name"; _typeLabel.Text = "Brand"; _ipLabel.Text = "IP Address"; _apiKeyLabel.Text = "API Key";
         _deviceIdLabel.Text = "Device ID"; _loginUserLabel.Text = "Username"; _loginPassLabel.Text = "Password";
