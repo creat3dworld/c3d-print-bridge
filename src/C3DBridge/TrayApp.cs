@@ -124,7 +124,19 @@ public sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(aboutItem);
         menu.Items.Add(exitItem);
         _icon.ContextMenuStrip = menu;
-        _icon.DoubleClick += (_, _) => ShowConfigure();
+        // 2281: either mouse button opens the menu. Right-click
+        // already opened it (ContextMenuStrip default); a single
+        // left click now opens it too, at the cursor, for
+        // touch / tablet use where right-click is awkward.
+        // Double-click no longer opens Configure directly —
+        // with left-click opening the menu, a double-click
+        // would otherwise open both the menu and Configure.
+        // Configure is the first item in the menu itself.
+        _icon.MouseClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left)
+                _icon.ContextMenuStrip?.Show(Cursor.Position);
+        };
 
         StartWorker();
         SleepPreventer.Prevent();

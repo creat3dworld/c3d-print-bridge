@@ -1,0 +1,30 @@
+C3D Print Bridge - version 2026.1021.2281
+Either mouse button opens the tray menu.
+NOT compiled (no dotnet on the VM) — brace-balanced only.
+Pushed automatically under the Oct 23, 2026 standing rule
+("just push them when you have them").
+
+WHAT CHANGED
+- Right-click on the tray icon already opened the menu
+  (ContextMenuStrip default). A single left click now
+  opens the same menu at the cursor, so either button
+  works — useful on touch / tablet use where right-click
+  is awkward.
+- Double-click no longer opens Configure directly. With
+  left-click opening the menu, a double-click would
+  otherwise open both the menu and Configure. Configure
+  is the first item in the menu itself, so nothing is
+  lost — it is just one click into the menu now.
+
+CHANGED FILES
+- src/C3DBridge/Program.cs (version only, 2280 -> 2281)
+- src/C3DBridge/TrayApp.cs (MouseClick handler for left
+  click; DoubleClick Configure handler removed)
+
+VERIFICATION STILL NEEDED (after PC update to 2281)
+1. On the shop PC, update to 2281.
+2. Single left click on the tray icon opens the menu.
+3. Right-click on the tray icon still opens the menu.
+4. Configure… in the menu still opens Configure.
+5. The menu still works after clicking the Action1 item
+   (2280 guard in place).
