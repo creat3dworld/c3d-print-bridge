@@ -88,6 +88,15 @@ public sealed class TrayApplicationContext : ApplicationContext
         uninstallItem.Click += (_, _) => UninstallApp("Uninstall-C3DBridge.ps1",
             "Fresh start? This removes ALL previous bridge registry entries and files, including your printers, key, and Desktop backup, and does NOT reinstall. Use Repair instead to keep your setup.");
         menu.Items.Add(uninstallItem);
+        // About (2278): licence of use, disclaimer, legal notes,
+        // and the running version number, in one dialog.
+        var aboutItem = new ToolStripMenuItem("About…");
+        aboutItem.Click += (_, _) =>
+        {
+            using var about = new AboutForm();
+            about.ShowDialog();
+        };
+        menu.Items.Add(aboutItem);
         menu.Items.Add(exitItem);
         _icon.ContextMenuStrip = menu;
         _icon.DoubleClick += (_, _) => ShowConfigure();

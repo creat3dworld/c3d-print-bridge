@@ -1,0 +1,74 @@
+C3D Print Bridge - version 2026.1021.2278
+About dialog in the tray menu.
+NOT pushed to GitHub in this task. NOT deployed. NOT compiled
+(no dotnet on the VM) — brace-balanced only, like 2276/2277.
+
+WHAT IT ADDS
+- Tray menu, just before Exit: "About…".
+- The dialog (AboutForm.cs) is read-only, with an OK button
+  to close it, and shows in one place:
+  - Product name: C3D Print Bridge
+  - Running version, taken from Program.Version at run
+    time — never hard-coded, so it can never disagree
+    with the build
+  - © 2026 Creat3d World, USA
+  - Licence of use: licensed for use by Creat3d World on
+    its own shop computers, to connect its own printers
+    to its own shipping dashboard; no redistribution,
+    resale, rental, or use by others without written
+    permission; no transfer of ownership, and no right
+    to product files, designs, or trademarks
+  - Disclaimer: provided "as is", no warranty, use at
+    the operator's own risk; the bridge is a thin relay
+    only (never slices, never decides a job, never
+    orders a queue); the operator remains responsible
+    for confirming a print is safe to start; liability
+    limited to the fullest extent allowed by law
+  - Governing law: governed by the laws of the United
+    States and the State of Florida, with venue in Duval
+    County, Florida, unless otherwise required by law.
+    The ""USA"" copyright line does not change that
+    governing law or venue.
+  - Legal notes: printer credentials, access codes, and
+    API keys are stored only on the local shop computer
+    and never sent to any third party except the printer
+    or dashboard they belong to; Bambu Lab, Snapmaker,
+    Action1, and other names are trademarks of their
+    respective owners, with no affiliation or
+    endorsement claimed or implied
+- The text is a general notice for this tool itself, not
+  legal advice, and it does not change any term of sale
+  for Creat3d World products.
+
+FIX INCLUDED (after a reported 2277 update failure)
+- The 2277 update was reported as "failed to verify and
+  rolled back" — that rollback is the installer's safety
+  path: on a failed dotnet publish it restores the
+  previous app files, with config and key preserved, so
+  the bridge is left on its old version, not broken.
+- Prime suspect, fixed here before 2278 is pushed:
+  Action1Client.cs (2277) uses ServiceController and the
+  Windows Registry, but C3DBridge.csproj had no explicit
+  package reference for either. If those APIs are not in
+  the shared framework on that PC, publish fails and the
+  update rolls back exactly as reported. This build adds
+  explicit references for both packages. Confirm against
+  the shop PC build log (%TEMP%\C3DBridge-build.log,
+  last 30 lines) before treating this as proven — if the
+  log shows a different error, that error is the cause,
+  not this one.
+
+CHANGED FILES
+- src/C3DBridge/Program.cs (version only, 2277 -> 2278)
+- src/C3DBridge/AboutForm.cs (new)
+- src/C3DBridge/TrayApp.cs (About… menu item)
+- src/C3DBridge/C3DBridge.csproj (explicit
+  System.ServiceProcess.ServiceController + Microsoft.Win32.Registry references)
+
+VERIFICATION STILL NEEDED (after push + PC update to 2278)
+1. On the shop PC, update to 2278 (tray Get updates).
+2. Tray menu shows "About…" before Exit; clicking it
+   opens a read-only dialog with the version number
+   matching the running build (2278), licence, disclaimer,
+   and legal notes, and OK closes it.
+3. No other menu item, printer, or setting changes.

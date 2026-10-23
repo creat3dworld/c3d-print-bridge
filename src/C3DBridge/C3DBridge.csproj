@@ -13,6 +13,14 @@
 
   <ItemGroup>
     <PackageReference Include="MQTTnet" Version="4.3.7.1207" />
+    <!-- 2278 fix: Action1Client.cs (2277) uses ServiceController
+         and the Windows Registry. Those APIs are not guaranteed
+         to come from the shared framework alone on every
+         install, so reference them explicitly — a missing
+         reference makes dotnet publish fail, which is what
+         makes an update roll back to the previous app. -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
   </ItemGroup>
 
 </Project>
