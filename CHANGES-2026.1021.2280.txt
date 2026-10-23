@@ -1,0 +1,48 @@
+C3D Print Bridge - version 2026.1021.2280
+Action1 menu click can no longer kill the tray menu.
+NOT compiled (no dotnet on the VM) — brace-balanced only.
+Pushed automatically under the Oct 23, 2026 standing rule
+("just push them when you have them").
+
+REPORTED PROBLEM
+- Enabling / clicking the Action1 tray menu item was
+  reported to break the tray icon right-click feature.
+  Likely mechanism: the Action1 click handler was an
+  async-void handler with no catch, so any exception in
+  the install flow (file picker, config save, detection,
+  installer launch) would kill the tray app outright —
+  icon gone, right-click dead, no message shown.
+  That mechanism is not yet proven from a shop-PC log;
+  the fix below removes the crash path regardless of
+  which step threw.
+
+FIX
+- The Action1 menu click handler now catches everything
+  and reports it in a message box instead of crashing,
+  so a failed Action1 click leaves the tray menu alive.
+- RefreshAction1Menu (the check-mark detection) is now
+  also guarded: a detection failure logs, resets the
+  item to unchecked "Install Action1 client…", and never
+  breaks the menu.
+- No change to what the Action1 install itself does,
+  and no change to the 2279 auto-check behaviour.
+
+CHANGED FILES
+- src/C3DBridge/Program.cs (version only, 2279 -> 2280)
+- src/C3DBridge/TrayApp.cs (guarded Action1 click handler
+  and guarded RefreshAction1Menu)
+
+VERIFICATION STILL NEEDED (after PC update to 2280)
+1. On the shop PC, update to 2280 (auto-update should
+   pick it up, or tray Get updates).
+2. Right-click the tray icon: the menu must open, with
+   About… and Install Action1 client… present.
+3. Click Install Action1 client…: either the file
+   picker / confirm / already-installed box appears,
+   or a warning box with the error appears — the tray
+   icon and right-click must still work afterwards,
+   even if the install itself fails.
+4. If right-click was already broken on 2278/2279:
+   restart the Bridge (Scheduled Task "C3D Print Bridge"
+   or re-run C:\C3D_Bridge\app\C3DBridge.exe) after
+   updating to 2280, then repeat steps 2-3.

@@ -84,7 +84,25 @@ public sealed class TrayApplicationContext : ApplicationContext
         // clicking it when checked only reports it is installed,
         // it never uninstalls on an uncheck.
         _action1Item = new ToolStripMenuItem("Install Action1 client…");
-        _action1Item.Click += async (_, _) => await InstallAction1Async();
+        // 2280 fix: an async-void click handler that throws kills
+        // the tray app (icon gone, right-click dead) with no
+        // message. Catch everything here and report it in a box
+        // instead, so a failed Action1 click can never take the
+        // tray menu down with it.
+        _action1Item.Click += async (_, _) =>
+        {
+            try { await InstallAction1Async(); }
+            catch (Exception ex)
+            {
+                Program.Log($"Action1 menu click failed (tray kept alive): {ex.Message}");
+                try
+                {
+                    MessageBox.Show($"Action1 install could not start: {ex.Message}",
+                        "C3D Print Bridge — Action1 client", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                catch { /* never let the error box itself kill the tray */ }
+            }
+        };
         menu.Items.Add(_action1Item);
         menu.Items.Add(new ToolStripSeparator());
         var repairItem = new ToolStripMenuItem("Repair and reinstall…");
@@ -1807,9 +1825,19 @@ public sealed class TrayApplicationContext : ApplicationContext
     private void RefreshAction1Menu()
     {
         if (_action1Item is null) return;
-        var installed = Action1Client.IsInstalled();
-        _action1Item.Checked = installed;
-        _action1Item.Text = installed ? "Action1 client installed ✓" : "Install Action1 client…";
+        try
+        {
+            var installed = Action1Client.IsInstalled();
+            _action1Item.Checked = installed;
+            _action1Item.Text = installed ? "Action1 client installed ✓" : "Install Action1 client…";
+        }
+        catch (Exception ex)
+        {
+            // 2280: detection must never break the tray menu.
+            Program.Log($"Action1 menu refresh failed (tray kept alive): {ex.Message}");
+            _action1Item.Checked = false;
+            _action1Item.Text = "Install Action1 client…";
+        }
     }
 
     private async Task InstallAction1Async()
