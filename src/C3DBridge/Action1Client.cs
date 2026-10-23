@@ -1,15 +1,18 @@
-// C3D Print Bridge — Action1 client install helper (2277).
+// C3D Print Bridge — Action1 client install helper (2277, 2282).
 //
 // The Action1 agent is ACCOUNT-TIED: the installer downloaded from
 // the Action1 console (shop@creat3dworld.com account) carries that
 // account's organisation binding in the file itself. The bridge
-// NEVER downloads an installer, NEVER embeds an Action1 URL, token,
-// organisation name, or account detail, and NEVER commits an
-// installer path with a real value to the repo. The operator
-// downloads the agent from their own Action1 console, picks that
-// local file once through the tray menu, and the bridge stores only
-// that local path in bridge-config.json on the PC (local only,
-// like every other bridge setting, preserved by the installer).
+// NEVER embeds an Action1 URL, token, organisation name, or
+// account detail in the repo, and NEVER commits an installer
+// path or download link with a real value. Since 2282 the tray
+// menu can download the agent itself — but ONLY from a link the
+// operator pastes once on the PC (console → Other Options →
+// Direct download), stored only in bridge-config.json on the PC
+// (local only, like every other bridge setting, preserved by the
+// installer) and never logged, never sent to the dashboard, and
+// never written to the repo. The old flow (pick a console-
+// downloaded file by hand) still works as a fallback.
 //
 // Install runs ELEVATED (UAC prompt) because an agent is a
 // per-machine install. Action1's own documented unattended
@@ -72,6 +75,62 @@ public static class Action1Client
         catch { }
 
         return false;
+    }
+
+    /// <summary>True when a pasted Action1 download link looks
+    /// usable: HTTPS, an Action1 host only, an /agent/ path,
+    /// and an .msi file. The link itself is never logged —
+    /// callers log only that a saved link was used.</summary>
+    public static bool IsValidDownloadUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return false;
+        if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)) return false;
+        if (uri.Scheme != Uri.UriSchemeHttps) return false;
+        if (!uri.Host.EndsWith(".action1.com", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(uri.Host, "action1.com", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!uri.AbsolutePath.Contains("/agent/", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!uri.AbsolutePath.EndsWith(".msi", StringComparison.OrdinalIgnoreCase)) return false;
+        return true;
+    }
+
+    /// <summary>Download the account-tied agent from a saved
+    /// console link (2282) into the bridge temp folder and
+    /// return the local path, or null with a reason. Runs on
+    /// a worker thread by callers so the tray UI stays
+    /// responsive. The URL is never logged, never stored
+    /// anywhere except the operator's local config, and the
+    /// download is rejected unless IsValidDownloadUrl passes.</summary>
+    public static async Task<(string? Path, string? Error)> DownloadAsync(string url, CancellationToken ct = default)
+    {
+        if (!IsValidDownloadUrl(url))
+            return (null, "That Action1 download link does not look right — it must be an https://…action1.com/…/agent/…msi link from your Action1 console (Other Options → Direct download).");
+        try
+        {
+            var uri = new Uri(url.Trim());
+            var fileName = Path.GetFileName(uri.AbsolutePath);
+            if (string.IsNullOrWhiteSpace(fileName) || !fileName.EndsWith(".msi", StringComparison.OrdinalIgnoreCase))
+                fileName = "action1_agent.msi";
+            var dir = Path.Combine(Config.AppDir, "temp");
+            Directory.CreateDirectory(dir);
+            var dest = Path.Combine(dir, fileName);
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+            using var resp = await http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, ct);
+            resp.EnsureSuccessStatusCode();
+            await using var fs = File.Create(dest);
+            await resp.Content.CopyToAsync(fs, ct);
+            if (new FileInfo(dest).Length < 1024)
+            {
+                try { File.Delete(dest); } catch { }
+                return (null, "The Action1 download came back too small to be an installer — check the console link and try again.");
+            }
+            Program.Log($"Action1 agent downloaded from the saved console link: {fileName}");
+            return (dest, null);
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"Action1 agent download failed: {ex.Message}");
+            return (null, $"Action1 agent download failed: {ex.Message}");
+        }
     }
 
     /// <summary>Install the account-tied agent from a local installer

@@ -1,0 +1,72 @@
+C3D Print Bridge - version 2026.1021.2282
+Action1 menu option now downloads the agent itself from
+a console link pasted once on the PC.
+NOT compiled (no dotnet on the VM) — brace-balanced only.
+Pushed automatically under the Oct 23, 2026 standing rule
+("just push them when you have them").
+
+WHY
+- Marlena, Oct 23, 2026: the Bridge menu was supposed to
+  ADD the Action1 client to this machine, not ask her to
+  download a file by hand first — and she had no installer
+  file. The Action1 console's Other Options dialog gives a
+  curl / direct-download link for the account-tied agent
+  (file action1_agent(Creat3dWorld).msi, after the Oct 23
+  organization rename to Creat3dWorld).
+- The link is NOT put in this repo: the repo is public,
+  and the link is account-tied. It lives only in
+  bridge-config.json on the PC, never logged, never sent
+  to the dashboard, never committed with a real value.
+
+WHAT CHANGED
+- New local config field action1_download_url
+  (Models.cs): blank in the repo example, real value
+  only on the PC.
+- Action1Client.DownloadAsync (new): downloads ONLY an
+  https://…action1.com/…/agent/…msi link, into the bridge
+  temp folder, rejects anything else, and never logs the
+  link itself. IsValidDownloadUrl enforces that check.
+- New Action1LinkForm: paste the console download link
+  once (Endpoints -> Install Agent -> Other Options ->
+  Direct download), with "Pick a file instead…" keeping
+  the original 2277 file-picker flow.
+- Tray Install Action1 client… (2282): if a download
+  link is saved, it confirms, downloads from that link,
+  then installs from the downloaded file (UAC prompt is
+  still the gate). If no link and no file is saved, it
+  shows the link prompt instead of a file picker first.
+  Download + install run on a worker thread so a hung
+  installer or a prompt on another display cannot freeze
+  the tray menu.
+- Action1 auto-check (2282): can now download from a
+  saved link the same way. It never asks for a link or
+  pops a result box in the background — it only logs, so
+  a background check cannot block the tray with a dialog
+  on an unseen display.
+
+CHANGED FILES
+- src/C3DBridge/Program.cs (version only, 2281 -> 2282)
+- src/C3DBridge/Models.cs (action1_download_url field)
+- src/C3DBridge/Action1Client.cs (DownloadAsync,
+  IsValidDownloadUrl, header updated)
+- src/C3DBridge/Action1LinkForm.cs (new link prompt)
+- src/C3DBridge/TrayApp.cs (menu install flow, auto-check)
+
+VERIFICATION STILL NEEDED (after PC update to 2282)
+1. On the shop PC, kill any stuck C3DBridge process
+   first (Task Manager -> C3DBridge.exe -> End task),
+   then update to 2282 (auto-update is ON).
+2. Tray left-click AND right-click still open the menu.
+3. Install Action1 client… -> paste the console download
+   link once -> confirm -> approve the UAC prompt.
+   The menu should flip to "Action1 client installed"
+   and the PC should appear in the Action1 console
+   (allow a minute to check in).
+4. No Action1 link, token, or download ID appears in
+   the repo, bridge.log, or any report — only the file
+   name and "saved console link" are logged.
+5. Once the agent is confirmed working, Marlena has
+   authorized remote work on the PC (Oct 23, 2026) to
+   verify all aspects of everything — that verification
+   is a separate step after step 3, not part of this
+   build.

@@ -1870,24 +1870,77 @@ public sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
+        // 2282: the menu now downloads the agent itself from a
+        // console link pasted once on this PC (local config
+        // only, never logged, never in the repo). The old
+        // pick-a-downloaded-file flow is kept as a fallback.
+        // Download + install run on a worker thread so the
+        // tray icon stays responsive while they run — a hung
+        // installer or a prompt on another display must never
+        // freeze the tray menu itself.
         var installerPath = cfg.Action1InstallerPath;
         if (string.IsNullOrWhiteSpace(installerPath) || !File.Exists(installerPath))
         {
-            // No installer on file yet: the operator downloads the
-            // account-tied agent from their own Action1 console and
-            // picks that local file here. Nothing is downloaded by
-            // the bridge, and no account detail is stored — only
-            // the local path, in bridge-config.json on this PC.
-            using var picker = new OpenFileDialog
+            if (Action1Client.IsValidDownloadUrl(cfg.Action1DownloadUrl))
             {
-                Title = "Pick the Action1 agent installer downloaded from your Action1 console",
-                Filter = "Action1 agent installer (*.msi;*.exe)|*.msi;*.exe|All files (*.*)|*.*",
-            };
-            if (picker.ShowDialog() != DialogResult.OK) return;
-            installerPath = picker.FileName;
-            cfg = cfg with { Action1InstallerPath = installerPath };
-            Config.Save(cfg);
-            Program.Log($"Action1 installer path saved locally: {Path.GetFileName(installerPath)} (path itself is in local config only, never logged in full).");
+                var confirmLink = MessageBox.Show(
+                    "Download the Action1 client from your saved console link and install it?\n\nThis installs the agent tied to your Action1 account, so this PC will appear in your Action1 console for browser remote control. You will be asked to approve an administrator prompt.",
+                    "C3D Print Bridge — Install Action1 client", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (confirmLink != DialogResult.Yes) return;
+                var (downloaded, downloadError) = await Task.Run(() => Action1Client.DownloadAsync(cfg.Action1DownloadUrl!));
+                if (downloaded is null)
+                {
+                    MessageBox.Show(downloadError, "C3D Print Bridge — Action1 client",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                installerPath = downloaded;
+                cfg = cfg with { Action1InstallerPath = installerPath };
+                Config.Save(cfg);
+            }
+            else
+            {
+                // No saved link and no saved file yet: ask for
+                // the console link once, or let the operator
+                // pick a file they already downloaded by hand.
+                using var linkForm = new Action1LinkForm();
+                if (linkForm.ShowDialog() != DialogResult.OK) return;
+                if (linkForm.PickFileInstead)
+                {
+                    using var picker = new OpenFileDialog
+                    {
+                        Title = "Pick the Action1 agent installer downloaded from your Action1 console",
+                        Filter = "Action1 agent installer (*.msi;*.exe)|*.msi;*.exe|All files (*.*)|*.*",
+                    };
+                    if (picker.ShowDialog() != DialogResult.OK) return;
+                    installerPath = picker.FileName;
+                    cfg = cfg with { Action1InstallerPath = installerPath };
+                    Config.Save(cfg);
+                    Program.Log($"Action1 installer path saved locally: {Path.GetFileName(installerPath)} (path itself is in local config only, never logged in full).");
+                }
+                else
+                {
+                    if (!Action1Client.IsValidDownloadUrl(linkForm.DownloadUrl))
+                    {
+                        MessageBox.Show("That Action1 download link does not look right — it must be an https://…action1.com/…/agent/…msi link from your Action1 console (Other Options → Direct download). Nothing was saved.",
+                            "C3D Print Bridge — Action1 client", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    cfg = cfg with { Action1DownloadUrl = linkForm.DownloadUrl };
+                    Config.Save(cfg);
+                    Program.Log("Action1 console download link saved locally (link itself is never logged).");
+                    var (downloaded, downloadError) = await Task.Run(() => Action1Client.DownloadAsync(linkForm.DownloadUrl));
+                    if (downloaded is null)
+                    {
+                        MessageBox.Show(downloadError, "C3D Print Bridge — Action1 client",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    installerPath = downloaded;
+                    cfg = cfg with { Action1InstallerPath = installerPath };
+                    Config.Save(cfg);
+                }
+            }
         }
 
         var confirm = MessageBox.Show(
@@ -1895,24 +1948,24 @@ public sealed class TrayApplicationContext : ApplicationContext
             "C3D Print Bridge — Install Action1 client", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         if (confirm != DialogResult.Yes) return;
 
-        var (ok, detail) = await Action1Client.InstallAsync(installerPath);
+        var (ok, detail) = await Task.Run(() => Action1Client.InstallAsync(installerPath));
         RefreshAction1Menu();
         MessageBox.Show(detail, "C3D Print Bridge — Action1 client",
             MessageBoxButtons.OK, ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
     // Action1 auto-check (2279, Marlena approved Oct 23, 2026:
-    // "Yes add it" to tying Action1 to the version auto-check).
-    // Runs on the UI thread (see _uiContext). It only DETECTS
-    // and, when an installer was already picked and saved by
-    // the operator, attempts the install — the Windows admin
-    // (UAC) prompt is still the gate, so declining it installs
-    // nothing, and the check simply tries again next cycle.
-    // It never downloads an installer, never picks a file in
-    // the background, and never installs when no installer
-    // path is saved — in that case it only logs and leaves
-    // the tray menu unchecked, so the operator can pick the
-    // console download manually.
+    // "Yes add it" to tying Action1 to the version auto-check;
+    // 2282: it can now download from a saved console link).
+    // It only DETECTS and, when an installer or a download
+    // link was already saved by the operator, attempts the
+    // install — the Windows admin (UAC) prompt is still the
+    // gate, so declining it installs nothing, and the check
+    // simply tries again next cycle. It never picks a file
+    // or asks for a link in the background, and it never
+    // pops a result box: a background check must never block
+    // the tray UI with a dialog on an unseen display — it
+    // only logs, so the operator can use the tray menu.
     private async Task AutoCheckAction1Async(BridgeConfig cfg)
     {
         RefreshAction1Menu();
@@ -1924,18 +1977,29 @@ public sealed class TrayApplicationContext : ApplicationContext
         var installerPath = cfg.Action1InstallerPath;
         if (string.IsNullOrWhiteSpace(installerPath) || !File.Exists(installerPath))
         {
-            Program.Log("Action1 auto-check: client not detected, and no installer is saved — use the tray menu Install Action1 client… item to pick your Action1 console download.");
-            return;
+            if (Action1Client.IsValidDownloadUrl(cfg.Action1DownloadUrl))
+            {
+                Program.Log("Action1 auto-check: client not detected, downloading from the saved console link (admin prompt will appear; declining it installs nothing).");
+                var (downloaded, downloadError) = await Task.Run(() => Action1Client.DownloadAsync(cfg.Action1DownloadUrl!));
+                if (downloaded is null)
+                {
+                    Program.Log($"Action1 auto-check download failed: {downloadError}");
+                    return;
+                }
+                installerPath = downloaded;
+                cfg = cfg with { Action1InstallerPath = installerPath };
+                Config.Save(cfg);
+            }
+            else
+            {
+                Program.Log("Action1 auto-check: client not detected, and no download link or installer is saved — use the tray menu Install Action1 client… item and paste your Action1 console download link once.");
+                return;
+            }
         }
         Program.Log($"Action1 auto-check: client not detected, installing from saved installer {Path.GetFileName(installerPath)} (admin prompt will appear; declining it installs nothing).");
-        var (ok, detail) = await Action1Client.InstallAsync(installerPath);
+        var (ok, detail) = await Task.Run(() => Action1Client.InstallAsync(installerPath));
         RefreshAction1Menu();
         Program.Log($"Action1 auto-check result: {detail}");
-        if (!ok)
-        {
-            MessageBox.Show(detail, "C3D Print Bridge — Action1 client",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
     }
 
     /// <summary>Silent auto-update check. Unlike manual Get

@@ -109,6 +109,18 @@ public sealed record BridgeConfig
     /// example config leaves this blank, and a real path lives
     /// only in bridge-config.json on the PC.</summary>
     [JsonPropertyName("action1_installer_path")] public string? Action1InstallerPath { get; init; }
+    /// <summary>Action1 agent download link (2282). LOCAL ONLY, set
+    /// when the operator pastes the account-tied download link
+    /// from their own Action1 console (Other Options → Direct
+    /// download) into the tray menu prompt. Never a token on
+    /// its own, never committed with a real value, never
+    /// logged, never sent to the dashboard: the example config
+    /// leaves this blank, and a real link lives only in
+    /// bridge-config.json on the PC. The tray menu downloads
+    /// from this link (Action1 host only, .msi only) and then
+    /// installs from the downloaded file, so the operator no
+    /// longer has to download and pick a file by hand.</summary>
+    [JsonPropertyName("action1_download_url")] public string? Action1DownloadUrl { get; init; }
     [JsonPropertyName("printers")] public List<PrinterConfig> Printers { get; init; } = new();
 }
 
