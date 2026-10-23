@@ -39,6 +39,22 @@ public sealed record PrinterConfig
     /// restarts. Never sent to the dashboard on its own — only
     /// the snapshot JPEG and its source label are sent.</summary>
     [JsonPropertyName("snapshot_auto_discovered")] public bool SnapshotAutoDiscovered { get; init; }
+    /// <summary>Live-feed URL for Bed View (2276, Snapmaker
+    /// only so far). Owner-set, or auto-discovered by the
+    /// bridge from the printer's own Moonraker webcam list
+    /// and saved here in the LOCAL config only. The bridge
+    /// never sends this URL to the dashboard when it is an
+    /// RTSP or other non-HTTP URL — the dashboard then gets
+    /// only the feed-type label, and snapshots remain the
+    /// fallback. Auto-discovery never overwrites a URL
+    /// already set here.</summary>
+    [JsonPropertyName("stream_url")] public string? StreamUrl { get; init; }
+    /// <summary>True when StreamUrl was filled by bridge
+    /// auto-discovery (2276) rather than set by the owner.
+    /// Never sent to the dashboard on its own — only the
+    /// feed-type label and, for HTTP feeds, a
+    /// credential-stripped feed URL are sent.</summary>
+    [JsonPropertyName("stream_auto_discovered")] public bool StreamAutoDiscovered { get; init; }
     /// <summary>Bambu only: printer serial number (for MQTT topics).</summary>
     [JsonPropertyName("serial")] public string? Serial { get; init; }
     /// <summary>Bambu only: LAN access code from the printer's screen.
@@ -86,6 +102,13 @@ public sealed record BridgeConfig
     /// found. Stored in bridge-config.json, preserved by the
     /// installer like every other local setting.</summary>
     [JsonPropertyName("auto_update")] public bool AutoUpdate { get; init; }
+    /// <summary>Action1 agent installer (2277). LOCAL PATH ONLY, set
+    /// when the operator picks the account-tied installer they
+    /// downloaded from their own Action1 console. Never a URL,
+    /// never a token, never committed with a real value: the
+    /// example config leaves this blank, and a real path lives
+    /// only in bridge-config.json on the PC.</summary>
+    [JsonPropertyName("action1_installer_path")] public string? Action1InstallerPath { get; init; }
     [JsonPropertyName("printers")] public List<PrinterConfig> Printers { get; init; } = new();
 }
 
@@ -168,6 +191,20 @@ public sealed record CameraSnapshot
     [JsonPropertyName("captured_unix")] public long CapturedUnix { get; init; }
     [JsonPropertyName("snapshot_base64")] public string SnapshotBase64 { get; init; } = "";
     [JsonPropertyName("snapshot_source")] public string SnapshotSource { get; init; } = "owner_snapshot_url";
+    /// <summary>Feed type for Bed View (2276): "none" when
+    /// no feed is known, "mjpeg" / "webrtc" / "hls" / "http"
+    /// for HTTP feeds a browser can embed, "rtsp" or "other"
+    /// for feeds a browser cannot show directly. This label
+    /// is sanitized — it is never a URL and never carries
+    /// credentials. A snapshot never auto-passes a bed check,
+    /// and a feed label never does either.</summary>
+    [JsonPropertyName("feed_type")] public string FeedType { get; init; } = "none";
+    /// <summary>LAN feed URL for Bed View (2276), HTTP(S)
+    /// only, with any userinfo/credentials stripped. Null
+    /// for RTSP/other feeds and when no feed is known, so
+    /// the dashboard never receives a non-embeddable URL
+    /// and never receives a credential.</summary>
+    [JsonPropertyName("feed_url")] public string? FeedUrl { get; init; }
     [JsonPropertyName("camera_available")] public bool CameraAvailable { get; init; }
 }
 

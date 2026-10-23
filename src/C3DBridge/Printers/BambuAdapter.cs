@@ -62,6 +62,14 @@ public sealed class BambuAdapter : IPrinterAdapter
     private bool _autoDiscoveryAttempted;
     public string SnapshotSource => _discoveredSnapshotUrl is not null || _cfg.SnapshotAutoDiscovered
         ? "auto_discovered_bambu_http" : "owner_snapshot_url";
+    // Feed (2276): Bambu RTSP work is PARKED until a Bambu
+    // printer is online, so no feed is reported here — not
+    // even a label derived from the HTTP JPEG endpoint.
+    // Snapshots (owner-set or 2275 HTTP-discovered) remain
+    // the only Bambu camera output.
+    public string FeedType => "none";
+    public string? FeedUrl => null;
+    public Task<string?> TryAutoDiscoverFeedAsync(CancellationToken ct) => Task.FromResult<string?>(null);
     public string Name => _cfg.Name;
     public string Type => _cfg.Type;
     public string Ip => _cfg.Ip;

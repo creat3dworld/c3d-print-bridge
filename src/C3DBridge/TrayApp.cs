@@ -34,6 +34,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private Task? _workerTask;
     private bool _exitRequested;
     private ToolStripMenuItem? _autoUpdateItem;
+    private ToolStripMenuItem? _action1Item;
     private System.Threading.Timer? _autoUpdateTimer;
     private bool _autoUpdateRunning;
 
@@ -68,6 +69,16 @@ public sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(selfTestItem);
         menu.Items.Add(updatesItem);
         menu.Items.Add(_autoUpdateItem);
+        // Action1 client (2277): a checkable tray menu item. The
+        // check mark is DETECTION, not a toggle: checked means an
+        // Action1 agent was found on this PC, unchecked means none
+        // was found. Clicking it when unchecked starts the install
+        // flow (operator picks their account-tied console download);
+        // clicking it when checked only reports it is installed,
+        // it never uninstalls on an uncheck.
+        _action1Item = new ToolStripMenuItem("Install Action1 client…");
+        _action1Item.Click += async (_, _) => await InstallAction1Async();
+        menu.Items.Add(_action1Item);
         menu.Items.Add(new ToolStripSeparator());
         var repairItem = new ToolStripMenuItem("Repair and reinstall…");
         repairItem.Click += (_, _) => UninstallApp("Uninstall-Repair-Reinstall.ps1",
@@ -84,6 +95,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         StartWorker();
         SleepPreventer.Prevent();
         RefreshAutoUpdateMenu();
+        RefreshAction1Menu();
     }
 
     // Creat3d World logo (rounded logo) as the tray + application icon.
@@ -1706,6 +1718,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             // mirror it in the tray toggle and (re)start/stop the
             // background check timer to match.
             RefreshAutoUpdateMenu();
+            RefreshAction1Menu();
         }
     }
 
@@ -1769,6 +1782,67 @@ public sealed class TrayApplicationContext : ApplicationContext
             : "Auto-update turned OFF: updates are manual (tray Get updates) only.");
         RestartAutoUpdateTimer(enabled);
         if (enabled) _ = AutoUpdateCheckAsync();
+    }
+
+    // Action1 client (2277). The check mark is live detection, so
+    // the menu can never show "installed" for an agent that is not
+    // actually there. Called on startup, after Configure closes,
+    // and after every install attempt.
+    private void RefreshAction1Menu()
+    {
+        if (_action1Item is null) return;
+        var installed = Action1Client.IsInstalled();
+        _action1Item.Checked = installed;
+        _action1Item.Text = installed ? "Action1 client installed ✓" : "Install Action1 client…";
+    }
+
+    private async Task InstallAction1Async()
+    {
+        if (Action1Client.IsInstalled())
+        {
+            RefreshAction1Menu();
+            MessageBox.Show("Action1 client is already installed on this PC. It should appear as an endpoint in your Action1 console — allow a minute for it to check in after a fresh install.",
+                "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var (cfg, error) = Config.Load();
+        if (cfg is null)
+        {
+            MessageBox.Show($"Could not load bridge config: {error}", "C3D Print Bridge",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var installerPath = cfg.Action1InstallerPath;
+        if (string.IsNullOrWhiteSpace(installerPath) || !File.Exists(installerPath))
+        {
+            // No installer on file yet: the operator downloads the
+            // account-tied agent from their own Action1 console and
+            // picks that local file here. Nothing is downloaded by
+            // the bridge, and no account detail is stored — only
+            // the local path, in bridge-config.json on this PC.
+            using var picker = new OpenFileDialog
+            {
+                Title = "Pick the Action1 agent installer downloaded from your Action1 console",
+                Filter = "Action1 agent installer (*.msi;*.exe)|*.msi;*.exe|All files (*.*)|*.*",
+            };
+            if (picker.ShowDialog() != DialogResult.OK) return;
+            installerPath = picker.FileName;
+            cfg = cfg with { Action1InstallerPath = installerPath };
+            Config.Save(cfg);
+            Program.Log($"Action1 installer path saved locally: {Path.GetFileName(installerPath)} (path itself is in local config only, never logged in full).");
+        }
+
+        var confirm = MessageBox.Show(
+            $"Install the Action1 client from {Path.GetFileName(installerPath)}?\n\nThis installs the agent tied to your Action1 account, so this PC will appear in your Action1 console for browser remote control. You will be asked to approve an administrator prompt.",
+            "C3D Print Bridge — Install Action1 client", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (confirm != DialogResult.Yes) return;
+
+        var (ok, detail) = await Action1Client.InstallAsync(installerPath);
+        RefreshAction1Menu();
+        MessageBox.Show(detail, "C3D Print Bridge — Action1 client",
+            MessageBoxButtons.OK, ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
     /// <summary>Silent auto-update check. Unlike manual Get

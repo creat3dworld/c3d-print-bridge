@@ -167,7 +167,9 @@ public sealed class DashboardClient : IDisposable
     /// yet — the caller logs that once and stops trying until
     /// restart, instead of spamming. The payload carries no
     /// credentials: printer name/ip/type, capture time, the
-    /// JPEG bytes, and the source label only.</summary>
+    /// JPEG bytes, the source label, and (2276) the feed
+    /// type plus, for HTTP feeds only, a
+    /// credential-stripped feed URL.</summary>
     public async Task<(bool Ok, System.Net.HttpStatusCode Status)> PushBedSnapshotAsync(CameraSnapshot snap, CancellationToken ct)
     {
         var (ok, status, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/bed-snapshot",
@@ -179,6 +181,8 @@ public sealed class DashboardClient : IDisposable
                 captured_unix = snap.CapturedUnix,
                 snapshot_base64 = snap.SnapshotBase64,
                 snapshot_source = snap.SnapshotSource,
+                feed_type = snap.FeedType,
+                feed_url = snap.FeedUrl,
                 camera_available = snap.CameraAvailable,
             }, ct);
         return (ok, status);

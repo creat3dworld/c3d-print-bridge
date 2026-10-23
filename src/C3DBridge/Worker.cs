@@ -369,9 +369,10 @@ public sealed class Worker
         }
     }
 
-    /// <summary>Camera auto-discovery (2275). For each adapter,
-    /// once per Worker startup, ask it for a discovered
-    /// snapshot URL. A returned URL is persisted ONLY to the
+    /// <summary>Camera auto-discovery (2275 snapshot,
+    /// 2276 feed). For each adapter, once per Worker
+    /// startup, ask it for a discovered snapshot URL and
+    /// a discovered feed URL. A returned URL is persisted ONLY to the
     /// local bridge-config.json on this PC (as that printer's
     /// snapshot_url, with snapshot_auto_discovered=true), and
     /// only when the freshly loaded config still has no URL
@@ -387,29 +388,83 @@ public sealed class Worker
     {
         foreach (var adapter in _printers.All)
         {
-            string? url;
+            // Snapshot (2275). A miss here must NOT skip
+            // feed discovery below: a printer can have a
+            // feed even when its snapshot check missed, and
+            // an owner-set snapshot must not block feed
+            // discovery either.
+            string? url = null;
             try { url = await adapter.TryAutoDiscoverSnapshotUrlAsync(ct); }
-            catch { continue; }
-            if (string.IsNullOrWhiteSpace(url)) continue;
-            var (loaded, error) = Config.Load();
-            if (loaded is null)
+            catch { url = null; }
+            if (!string.IsNullOrWhiteSpace(url))
             {
-                Program.Log($"Camera auto-discovery for '{adapter.Name}': discovered a snapshot URL but could not reload the local config to save it ({error}). It will be used for this run only.");
-                continue;
+                var (loaded, error) = Config.Load();
+                if (loaded is null)
+                {
+                    Program.Log($"Camera auto-discovery for '{adapter.Name}': discovered a snapshot URL but could not reload the local config to save it ({error}). It will be used for this run only.");
+                }
+                else
+                {
+                    var idx = loaded.Printers.FindIndex(p => string.Equals(p.Name, adapter.Name, StringComparison.OrdinalIgnoreCase));
+                    if (idx >= 0 && string.IsNullOrWhiteSpace(loaded.Printers[idx].SnapshotUrl))
+                    {
+                        var printers = loaded.Printers.ToList();
+                        printers[idx] = printers[idx] with { SnapshotUrl = url, SnapshotAutoDiscovered = true };
+                        try
+                        {
+                            Config.Save(loaded with { Printers = printers });
+                            Program.Log($"Camera auto-discovery for '{adapter.Name}': snapshot URL saved to the local bridge config only (source: {adapter.SnapshotSource}).");
+                        }
+                        catch (Exception ex)
+                        {
+                            Program.Log($"Camera auto-discovery for '{adapter.Name}': discovered a snapshot URL but could not save it locally ({ex.Message}). It will be used for this run only.");
+                        }
+                    }
+                }
             }
-            var idx = loaded.Printers.FindIndex(p => string.Equals(p.Name, adapter.Name, StringComparison.OrdinalIgnoreCase));
-            if (idx < 0) continue;
-            if (!string.IsNullOrWhiteSpace(loaded.Printers[idx].SnapshotUrl)) continue; // never overwrite a set URL
-            var printers = loaded.Printers.ToList();
-            printers[idx] = printers[idx] with { SnapshotUrl = url, SnapshotAutoDiscovered = true };
-            try
+
+            // Feed (2276): same once-per-startup rule, same
+            // local-only persistence, same never-overwrite
+            // rule. Only the feed TYPE is ever logged —
+            // never a URL, never a credential. An RTSP/other
+            // feed returns no URL (FeedUrl is null) but still
+            // reports its type, so Bed View knows to keep
+            // showing snapshots instead of a broken feed.
+            // For Snapmaker, snapshot discovery above already
+            // ran the shared webcam-list pass, so this call
+            // simply returns the feed found there.
+            string? feedUrl = null;
+            try { feedUrl = await adapter.TryAutoDiscoverFeedAsync(ct); }
+            catch { feedUrl = null; }
+            if (!string.IsNullOrWhiteSpace(feedUrl))
             {
-                Config.Save(loaded with { Printers = printers });
-                Program.Log($"Camera auto-discovery for '{adapter.Name}': snapshot URL saved to the local bridge config only (source: {adapter.SnapshotSource}).");
+                var (loaded2, error2) = Config.Load();
+                if (loaded2 is null)
+                {
+                    Program.Log($"Camera feed discovery for '{adapter.Name}': discovered a feed but could not reload the local config to save it ({error2}). It will be used for this run only.");
+                }
+                else
+                {
+                    var idx2 = loaded2.Printers.FindIndex(p => string.Equals(p.Name, adapter.Name, StringComparison.OrdinalIgnoreCase));
+                    if (idx2 >= 0 && string.IsNullOrWhiteSpace(loaded2.Printers[idx2].StreamUrl))
+                    {
+                        var printers2 = loaded2.Printers.ToList();
+                        printers2[idx2] = printers2[idx2] with { StreamUrl = feedUrl, StreamAutoDiscovered = true };
+                        try
+                        {
+                            Config.Save(loaded2 with { Printers = printers2 });
+                            Program.Log($"Camera feed discovery for '{adapter.Name}': feed saved to the local bridge config only (type: {adapter.FeedType}).");
+                        }
+                        catch (Exception ex)
+                        {
+                            Program.Log($"Camera feed discovery for '{adapter.Name}': discovered a feed but could not save it locally ({ex.Message}). It will be used for this run only.");
+                        }
+                    }
+                }
             }
-            catch (Exception ex)
+            else if (adapter.FeedUrl is null && adapter.FeedType != "none")
             {
-                Program.Log($"Camera auto-discovery for '{adapter.Name}': discovered a snapshot URL but could not save it locally ({ex.Message}). It will be used for this run only.");
+                Program.Log($"Camera feed discovery for '{adapter.Name}': feed type is {adapter.FeedType}; no embeddable feed URL, snapshots remain the fallback.");
             }
         }
     }
@@ -450,6 +505,8 @@ public sealed class Worker
                 CapturedUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 SnapshotBase64 = Convert.ToBase64String(bytes),
                 SnapshotSource = adapter.SnapshotSource,
+                FeedType = adapter.FeedType,
+                FeedUrl = adapter.FeedUrl,
                 CameraAvailable = live.CameraAvailable,
             }, ct);
             if (!ok && status == System.Net.HttpStatusCode.NotFound)

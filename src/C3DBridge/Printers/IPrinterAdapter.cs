@@ -46,6 +46,18 @@ public interface IPrinterAdapter
     /// has validated and saved a camera URL for this printer.</summary>
     string SnapshotSource { get; }
 
+    /// <summary>Feed type for Bed View (2276): "none",
+    /// "mjpeg", "webrtc", "hls", "http", "rtsp", or "other".
+    /// A label only — never a URL, never a credential.</summary>
+    string FeedType { get; }
+
+    /// <summary>LAN feed URL the dashboard may embed, HTTP(S)
+    /// only and credential-stripped. Null for RTSP/other
+    /// feeds and when no feed is known, so the dashboard
+    /// never receives a non-embeddable URL. Snapshots
+    /// remain the fallback in those cases.</summary>
+    string? FeedUrl { get; }
+
     /// <summary>Camera auto-discovery (2275). Runs at most once
     /// per adapter instance (once per Worker startup, which is
     /// also what happens when a printer is added via Configure,
@@ -59,4 +71,20 @@ public interface IPrinterAdapter
     /// config only; no config or credential is ever sent to
     /// the dashboard — only the snapshot JPEG itself.</summary>
     Task<string?> TryAutoDiscoverSnapshotUrlAsync(CancellationToken ct);
+
+    /// <summary>Feed auto-discovery (2276, Snapmaker only
+    /// so far). Runs at most once per adapter instance,
+    /// sharing the webcam-list fetch with snapshot
+    /// discovery. Returns the discovered HTTP feed URL, or
+    /// null when the printer already has a feed URL set,
+    /// when discovery is not supported for this brand, or
+    /// when the feed is RTSP/other (FeedType still reports
+    /// that, but no URL is returned for it). NEVER
+    /// overwrites an owner-set feed URL, and NEVER returns
+    /// a URL that was not taken from the printer's own
+    /// authenticated webcam list. The caller (Worker)
+    /// persists a returned URL to the LOCAL bridge config
+    /// only; the dashboard receives only FeedType and, for
+    /// HTTP feeds, the credential-stripped FeedUrl.</summary>
+    Task<string?> TryAutoDiscoverFeedAsync(CancellationToken ct);
 }

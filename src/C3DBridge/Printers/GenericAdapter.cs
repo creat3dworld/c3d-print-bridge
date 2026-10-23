@@ -23,6 +23,11 @@ public sealed class GenericAdapter : IPrinterAdapter
     public Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct)
         => Task.FromResult((false, $"Generic brand '{_cfg.Type}' — start not supported yet."));
     public string SnapshotSource => "owner_snapshot_url";
+    // Feed (2276): no feed discovery for generic brands —
+    // no brand-local camera endpoint is defined for them.
+    public string FeedType => "none";
+    public string? FeedUrl => null;
+    public Task<string?> TryAutoDiscoverFeedAsync(CancellationToken ct) => Task.FromResult<string?>(null);
 
     /// <summary>No auto-discovery for generic brands (2275):
     /// no brand-local camera endpoint is defined for them, so

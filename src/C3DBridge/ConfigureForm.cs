@@ -685,7 +685,7 @@ public sealed class ConfigureForm : Form
                 if (type == "bambu") pr = pr with { AccessCode = pass, PaxxUser = null, PaxxPassword = null };
                 else if (type == "snapmaker") { if (!string.IsNullOrWhiteSpace(user)) pr = pr with { PaxxUser = user.Trim(), PaxxPassword = pass }; else pr = pr with { AccessCode = pass }; }
                 var existing = _printers.FindIndex(x => string.Equals(x.Ip, ip, StringComparison.OrdinalIgnoreCase));
-                if (existing >= 0) { _printers[existing] = pr; updated++; } else { _printers.Add(pr); added++; }
+                if (existing >= 0) { _printers[existing] = pr with { SnapshotUrl = _printers[existing].SnapshotUrl, SnapshotAutoDiscovered = _printers[existing].SnapshotAutoDiscovered, StreamUrl = _printers[existing].StreamUrl, StreamAutoDiscovered = _printers[existing].StreamAutoDiscovered }; updated++; } else { _printers.Add(pr); added++; }
             }
             RefreshList();
             SaveToDisk();

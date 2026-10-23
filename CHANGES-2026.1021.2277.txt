@@ -1,0 +1,68 @@
+C3D Print Bridge - version 2026.1021.2277
+Action1 client install, from the tray menu.
+NOT pushed to GitHub in this task. NOT deployed. NOT compiled
+(no dotnet on the VM) — brace-balanced only, like 2276.
+
+WHAT IT ADDS
+- Tray menu, after "Automatically update the bridge": a
+  checkable item "Install Action1 client…".
+- The check mark is LIVE DETECTION, not a toggle: checked
+  means an Action1 agent was found on this PC, unchecked
+  means none was found. Clicking it when checked only
+  reports it is installed — it never uninstalls on uncheck.
+- Clicking it when unchecked starts the install flow:
+  1. If no installer path is saved locally, a file picker
+     asks the operator to pick the Action1 agent installer
+     they already downloaded from their own Action1 console.
+     That path is saved in bridge-config.json ON THE PC
+     ONLY (new field action1_installer_path).
+  2. A confirm box names only the installer file name and
+     says it installs the agent tied to the operator's
+     Action1 account, so this PC will appear in their
+     Action1 console for browser remote control.
+  3. The installer runs ELEVATED (UAC prompt) with
+     Action1's documented unattended args /quiet /norestart
+     and a log at action1_install.log next to the exe.
+  4. Success is only reported after re-detecting an agent
+     on the machine — an exit code alone is never claimed
+     as success.
+
+HOW IT IS TIED TO THE ACCOUNT
+- The Action1 agent installer downloaded from the Action1
+  console carries that account's organisation binding in
+  the file itself (Action1's docs note the file name
+  contains profile-specific information, and renaming it
+  requires passing the organisation name). The bridge
+  therefore does NOT download an installer, does NOT embed
+  an Action1 URL, token, or organisation name, and does
+  NOT store any account detail. The account tie comes
+  entirely from which console download the operator picks.
+- Nothing account-related is committed to the repo: the
+  example config leaves action1_installer_path blank, and
+  a real path lives only in the local bridge-config.json.
+
+DETECTION (no exact service name assumed)
+- Any Windows service mentioning Action1, an Action1
+  program folder, or an uninstall entry mentioning
+  Action1. Any one signal counts as detected.
+
+CHANGED FILES
+- src/C3DBridge/Program.cs (version only, 2276 -> 2277)
+- src/C3DBridge/Models.cs (BridgeConfig.action1_installer_path)
+- src/C3DBridge/Action1Client.cs (new: IsInstalled, InstallAsync)
+- src/C3DBridge/TrayApp.cs (menu item, RefreshAction1Menu,
+  InstallAction1Async, refresh after Configure closes)
+
+VERIFICATION STILL NEEDED (after push + PC update to 2277)
+1. On the shop PC, update to 2277 (tray Get updates).
+2. Tray menu shows "Install Action1 client…" unchecked
+   (no agent installed yet — confirmed Oct 21, 2026).
+3. Click it, pick the agent installer downloaded from the
+   shop@creat3dworld.com Action1 console, approve the
+   UAC prompt, and confirm the result box says installed
+   only after detection passes.
+4. In the Action1 console, the shop PC appears as an
+   endpoint (allow a minute to check in), and a browser
+   Remote Desktop session can be started from Endpoints.
+5. Restarting the bridge keeps the check mark correct
+   (detection, not a saved toggle).

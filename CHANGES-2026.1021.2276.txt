@@ -1,0 +1,191 @@
+C3D Print Bridge - version 2026.1021.2276
+Snapmaker feed codes, for dashboard Bed View (0.8.3).
+NOT pushed to GitHub in this task. NOT deployed.
+2273 auto-update work is kept intact (default OFF, unchanged),
+2274 bed snapshots are kept intact, and 2275 camera
+auto-discovery is kept intact and extended, not replaced.
+
+THE QUESTION IT ANSWERS
+2275 auto-discovers a Snapmaker snapshot_url from Moonraker,
+so Bed View can show a still bed image. Marlena asked for the
+feed side next: the stream/feed codes, not just a still.
+This build runs on the shop PC bridge, on the LAN — it was
+NOT probed from the VM, which cannot reach printer IPs, and
+it was NOT run against a printer.
+
+MOONRAKER WEBCAM FIELDS USED (its own webcam API only)
+GET /server/webcams/list, authenticated with the printer's
+existing auth (X-Api-Key from config.AccessCode, or Paxx
+login Bearer token via the adapter's existing AddAuthAsync —
+no credential is invented). The list entries carry, per
+Moonraker: name, location, service, target_fps, stream_url,
+snapshot_url, flip_horizontal, flip_vertical, rotation.
+This build reads only three of them from the FIRST webcam:
+  - snapshot_url (also accepting snapshotUrl / snapshot
+    spellings, as in 2275) — validated as a real JPEG
+    (100 bytes - 2 MB, SOI marker) before it is used.
+  - stream_url (also accepting streamUrl / stream
+    spellings) — classified, never fetched (see below).
+  - service — used only to classify the feed (for
+    example "mjpegstreamer", "uv4l-mjpeg", "webrtc",
+    "go2rtc").
+Relative URLs are resolved against http://<ip>:7125.
+No code was copied from any third-party Fluidd-bridge
+project; only Moonraker's own webcam API is used.
+
+WHAT THE FEED CODES DO
+- SnapmakerAdapter (2276): snapshot discovery and feed
+  discovery now share ONE webcam-list fetch per adapter
+  instance (once per Worker startup, which is also what
+  happens when a printer is added via Configure, since
+  Configure restarts the Worker). A snapshot miss no
+  longer blocks feed discovery, and an owner-set snapshot
+  no longer blocks feed discovery either — each is
+  persisted only when its own field is still blank.
+- PrinterConfig gains stream_url and
+  stream_auto_discovered, saved in the LOCAL
+  bridge-config.json only, exactly like snapshot_url in
+  2275. Configure's dashboard-Pull path now preserves
+  locally held snapshot/stream URLs by IP instead of
+  dropping them (the Pull itself still does not carry
+  them from the dashboard — that part is unchanged).
+- Worker (2276): on startup it persists a discovered
+  HTTP feed URL locally (never overwriting an owner-set
+  feed URL) and logs only the feed TYPE, never a URL and
+  never a credential. Every bed-snapshot payload now also
+  carries feed_type and, for HTTP feeds only, a
+  credential-stripped feed_url. Dashboard 0.8.3 ignores
+  fields it does not know, so no dashboard change was
+  needed for the bridge to send them — rendering a live
+  feed in Bed View is a separate future dashboard task.
+- Feed classification (scheme, service name, URL pattern
+  only — the stream is NEVER fetched, because a live
+  stream has no end and fetching it would hang the
+  bridge):
+    mjpeg  — mjpegstreamer / uv4l-mjpeg services, or
+             mjpg / mjpeg / action=stream / /stream URLs.
+             Embeddable in a browser as an <img>.
+    webrtc — webrtc / go2rtc services or URLs. Needs a
+             WebRTC player (future dashboard task).
+    hls    — .m3u8 URLs / hls services. Needs an HLS
+             player (future dashboard task).
+    http   — any other HTTP(S) URL; a dashboard may try
+             to embed it, but the bridge makes no promise
+             about what it serves.
+    rtsp   — rtsp:// / rtsps:// URLs. NOT embeddable in
+             a browser, and its URL is never sent to the
+             dashboard — only the "rtsp" label is sent.
+    other  — any other scheme. Same rule as rtsp.
+    none   — no feed known at all.
+- Browser vs snapshot-only, in one line: mjpeg feeds
+  can be shown live in a browser today (once the
+  dashboard renders them); webrtc/hls feeds need a
+  player first; rtsp/other feeds cannot be shown live
+  in a browser at all, so Bed View keeps showing
+  snapshots for them — never a broken feed placeholder.
+
+PAXX STOCK-CAMERA MONITOR SESSION — NOTED, NOT BUILT
+Paxx's stock camera is served to Fluidd through a local
+monitor session (third-party Fluidd bridges request a
+camera start over the printer's local MQTT interface and
+watch a monitor JPEG file). That session is NOT a
+Moonraker HTTP call, and implementing it would mean
+copying session logic from a third-party project into
+this thin relay. It is deliberately NOT implemented in
+this build. If Moonraker's webcam list reports a webcam
+for the U1, the feed codes above work without it. If it
+reports no webcam, Bed View keeps showing snapshots
+only (owner-set or 2275-discovered) — never a fake feed.
+Revisit only if Moonraker documents a camera-start
+endpoint, or if the U1's webcam list turns out to be
+empty in practice and a monitor session is the only
+documented way to fill it.
+
+WHAT WAS DELIBERATELY NOT IMPLEMENTED, AND WHY
+- No video decoding, no ffmpeg/OpenCV, no RTSP frame
+  grab: the bridge stays a thin relay, and Bambu RTSP
+  work is PARKED anyway until a Bambu printer is online
+  (Marlena's direction, Oct 22, 2026). BambuAdapter and
+  GenericAdapter report FeedType "none" and no feed URL
+  in this build; Bambu snapshots are unchanged.
+- No stream fetching/validation: a stream never ends,
+  so a GET to validate it would hang the bridge. Only
+  the snapshot (a finite JPEG) is fetched and validated.
+- No dashboard file edits in this task: the bridge now
+  SENDS feed_type/feed_url, but Bed View rendering a
+  live feed (img tag for mjpeg, players for webrtc/hls)
+  is a separate future dashboard task.
+- No MQTT camera-start session (see above).
+- No change to the safety gate: a snapshot never
+  auto-passes a bed check, and a feed label never does
+  either. Start still refuses unless bed + AMS are both
+  confirmed by a human.
+
+RULES, ALL KEPT
+- NEVER overwrites an owner-set snapshot_url or
+  stream_url (checked in the adapter and again against
+  a freshly loaded config before saving, so a Configure
+  save in between cannot be clobbered).
+- NEVER sends credentials, API keys, or the full local
+  config to the dashboard. Only the snapshot JPEG, the
+  feed-type label, and — for HTTP feeds only — a
+  credential-stripped feed URL are sent. No URL is ever
+  logged; only printer names and feed types are logged.
+- NEVER fakes an image or a feed: no URL = no snapshot,
+  no feed label beyond "none", never a placeholder.
+- Discovery runs at most once per Worker startup, not
+  on every status tick, and not on every snapshot tick.
+
+CHANGED FILES
+- src/C3DBridge/Program.cs (version only, 2275 -> 2276)
+- src/C3DBridge/Models.cs (PrinterConfig stream_url /
+  stream_auto_discovered; CameraSnapshot feed_type /
+  feed_url)
+- src/C3DBridge/Printers/IPrinterAdapter.cs (FeedType,
+  FeedUrl, TryAutoDiscoverFeedAsync contract)
+- src/C3DBridge/Printers/SnapmakerAdapter.cs (shared
+  webcam-list discovery, stream/service parsing,
+  feed classification, credential stripping)
+- src/C3DBridge/Printers/BambuAdapter.cs (feed stubs:
+  none/null — RTSP parked, see above)
+- src/C3DBridge/Printers/GenericAdapter.cs (feed stubs:
+  none/null — no brand-local endpoint defined)
+- src/C3DBridge/Worker.cs (feed persistence on startup,
+  feed_type/feed_url in bed-snapshot payloads, snapshot
+  miss no longer blocks feed discovery)
+- src/C3DBridge/DashboardClient.cs (feed_type/feed_url
+  in the bed-snapshot payload)
+- src/C3DBridge/ConfigureForm.cs (dashboard Pull now
+  preserves locally held snapshot/stream URLs by IP)
+
+VERIFICATION STILL NEEDED (after push + PC update to 2276)
+1. On the shop PC, update to 2276 (tray Get updates),
+   then check bridge.log: a Snapmaker with a Moonraker
+   webcam should log a feed discovery with a TYPE only
+   (mjpeg/webrtc/hls/http/rtsp/other/none) — no URL and
+   no credential in the log — and save stream_url locally
+   only when the feed is HTTP(S).
+2. In dashboard Bed View (0.8.3), that Snapmaker should
+   still show a real snapshot (unchanged behaviour), and
+   the snapshot payload should now carry its feed_type
+   (visible in the dashboard's stored snapshot data once
+   a future dashboard build renders it). Until that
+   dashboard build lands, Bed View will correctly keep
+   showing snapshots, not a live feed — that is expected,
+   not a failure of this bridge build.
+3. If the Snapmaker feed is RTSP-only, Bed View must
+   still show snapshots, not a broken feed, and the log
+   must show type rtsp with no feed URL saved.
+4. A printer with an owner-set snapshot_url or stream_url
+   must keep exactly that URL after updating to 2276
+   (check local bridge-config.json; no discovery log
+   line overwriting it).
+5. Start must still refuse before bed + AMS confirmation,
+   even with a fresh snapshot and a live feed present.
+6. Bambu printers: unchanged — snapshots only, no feed
+   label, RTSP work stays parked until a Bambu printer
+   is online.
+
+NOT compiled (no dotnet here), brace-balanced only.
+NOT pushed, NOT deployed, NOT run against a printer
+(the VM cannot reach LAN IPs).

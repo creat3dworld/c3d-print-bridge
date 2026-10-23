@@ -37,8 +37,16 @@
 //   paths /webcam/?action=snapshot and /webcam/snapshot —
 //   authenticated with the printer's existing key/login,
 //   validated as a real JPEG, and saved to the LOCAL config
-//   only. Without an owner-set or discovered URL, no snapshot
-//   is reported — never a fake image.
+//   only. (2276) The same webcam-list fetch also captures
+//   the first webcam's stream_url and service: an HTTP
+//   MJPEG/WebRTC/HLS feed is reported to the dashboard as a
+//   feed type plus a credential-stripped LAN feed URL, while
+//   an RTSP/other feed is reported only as its type label
+//   and snapshots remain the fallback. The bridge never
+//   fetches a stream to validate it (a stream never ends),
+//   never decodes video, and never fakes a feed. Without an
+//   owner-set or discovered URL, no snapshot is reported —
+//   never a fake image.
 // - Any unexpected response (unknown JSON shape, non-2xx) is
 //   reported as offline/error with the reason, never papered over.
 
@@ -59,9 +67,32 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
     // run can snapshot immediately, and the Worker persists it
     // to the local config (with SnapshotAutoDiscovered=true).
     private string? _discoveredSnapshotUrl;
-    private bool _autoDiscoveryAttempted;
+    private string? _discoveredStreamUrl; // HTTP(S) only; RTSP/other feeds keep a null URL here
+    private string _discoveredFeedType = "none";
+    private bool _cameraDiscoveryAttempted;
     public string SnapshotSource => _discoveredSnapshotUrl is not null || _cfg.SnapshotAutoDiscovered
         ? "auto_discovered_moonraker" : "owner_snapshot_url";
+    /// <summary>Feed type (2276). Owner-set stream URL wins
+    /// over a discovered one; a discovered RTSP/other feed
+    /// still reports its type even though its URL is never
+    /// sent to the dashboard.</summary>
+    public string FeedType => !string.IsNullOrWhiteSpace(_cfg.StreamUrl)
+        ? ClassifyFeedType(_cfg.StreamUrl, null) : _discoveredFeedType;
+    /// <summary>Dashboard-facing feed URL (2276): HTTP(S)
+    /// only, credential-stripped. Null for RTSP/other
+    /// feeds and when no feed is known.</summary>
+    public string? FeedUrl
+    {
+        get
+        {
+            var raw = !string.IsNullOrWhiteSpace(_cfg.StreamUrl) ? _cfg.StreamUrl : _discoveredStreamUrl;
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            if (!raw.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                !raw.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                return null;
+            return StripCredentials(raw);
+        }
+    }
     public string Name => _cfg.Name;
     public string Type => _cfg.Type;
     public string Ip => _cfg.Ip;
@@ -244,23 +275,75 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
         return await FetchJpegAsync(url, ct);
     }
 
-    /// <summary>Camera auto-discovery (2275). Never overwrites
-    /// an owner-set URL (returns null when one is set). Tries,
-    /// in order: Moonraker GET /server/webcams/list — first
+    /// <summary>Camera auto-discovery (2275 snapshot,
+    /// 2276 feed). Never overwrites an owner-set snapshot
+    /// URL (returns null when one is set). Tries, in
+    /// order: Moonraker GET /server/webcams/list — first
     /// webcam's snapshot_url, resolved against the printer
     /// base URL — then, only when the list is empty or
     /// unavailable, /webcam/?action=snapshot and
-    /// /webcam/snapshot. Every candidate is fetched with the
-    /// printer's existing auth and must validate as a JPEG
-    /// (100 bytes – 2 MB, SOI marker) before it is returned.
-    /// Each miss is logged once (this method runs at most
-    /// once per adapter instance); no URL is logged.</summary>
+    /// /webcam/snapshot. Every snapshot candidate is fetched
+    /// with the printer's existing auth and must validate
+    /// as a JPEG (100 bytes – 2 MB, SOI marker) before it
+    /// is returned. The same webcam-list fetch (2276)
+    /// also captures the first webcam's stream_url and
+    /// service for feed discovery — see
+    /// TryAutoDiscoverFeedAsync. Each miss is logged once
+    /// (this method runs at most once per adapter
+    /// instance); no URL is logged.</summary>
     public async Task<string?> TryAutoDiscoverSnapshotUrlAsync(CancellationToken ct)
     {
-        if (_autoDiscoveryAttempted) return null;
-        _autoDiscoveryAttempted = true;
         if (!string.IsNullOrWhiteSpace(_cfg.SnapshotUrl)) return null;
         if (!string.IsNullOrWhiteSpace(_discoveredSnapshotUrl)) return _discoveredSnapshotUrl;
+        await DiscoverCameraAsync(ct);
+        return _discoveredSnapshotUrl;
+    }
+
+    /// <summary>Feed discovery (2276). Shares the single
+    /// webcam-list fetch with snapshot discovery, so it
+    /// runs at most once per adapter instance and never
+    /// re-probes on every status tick. Returns the
+    /// discovered HTTP feed URL, or null when the printer
+    /// already has a feed URL set, when no feed was found,
+    /// or when the feed is RTSP/other (FeedType still
+    /// reports that type, but no URL is returned for it).
+    /// The stream URL is NEVER fetched to validate it —
+    /// a live stream has no end, so fetching it would hang
+    /// the bridge; it is classified only from its scheme,
+    /// its Moonraker service name, and its URL pattern.
+    /// Never overwrites an owner-set feed URL; no URL is
+    /// logged.</summary>
+    public async Task<string?> TryAutoDiscoverFeedAsync(CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(_cfg.StreamUrl)) return null;
+        if (!string.IsNullOrWhiteSpace(_discoveredStreamUrl)) return _discoveredStreamUrl;
+        await DiscoverCameraAsync(ct);
+        return _discoveredStreamUrl;
+    }
+
+    /// <summary>One shared camera discovery pass (2276).
+    /// Fetches Moonraker GET /server/webcams/list once,
+    /// parses the FIRST webcam's snapshot_url, stream_url
+    /// and service fields (Moonraker's own webcam API:
+    /// name, location, service, target_fps, stream_url,
+    /// snapshot_url, flip/rotation), resolves relative
+    /// URLs against the printer base URL, validates only
+    /// the snapshot as a real JPEG, and classifies the
+    /// feed without fetching it. Only if the list is empty
+    /// or unavailable does it fall back to the common
+    /// still paths, for the snapshot only — there is no
+    /// defined stream fallback. Paxx's stock-camera monitor
+    /// session (a local MQTT camera.start_monitor request
+    /// in third-party Fluidd bridges) is deliberately NOT
+    /// implemented here: it is not a Moonraker HTTP call,
+    /// and copying that session logic is out of scope for
+    /// this thin relay. If Moonraker reports no webcam,
+    /// Bed View keeps showing snapshots only — never a
+    /// fake feed.</summary>
+    private async Task DiscoverCameraAsync(CancellationToken ct)
+    {
+        if (_cameraDiscoveryAttempted) return;
+        _cameraDiscoveryAttempted = true;
 
         // 1. Moonraker webcam list.
         try
@@ -268,7 +351,7 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
             var req = new HttpRequestMessage(HttpMethod.Get, Base + "/server/webcams/list");
             if (!await AddAuthAsync(req, ct))
             {
-                Program.Log($"Camera auto-discovery for '{Name}': Moonraker login failed; no snapshot URL discovered.");
+                Program.Log($"Camera auto-discovery for '{Name}': Moonraker login failed; no camera URL discovered.");
             }
             else
             {
@@ -276,25 +359,49 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
                 if (res.IsSuccessStatusCode)
                 {
                     using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+                    var foundAny = false;
                     foreach (var cam in EnumerateWebcams(doc.RootElement))
                     {
-                        var raw = WebcamSnapshotField(cam);
-                        if (string.IsNullOrWhiteSpace(raw)) continue;
-                        var resolved = ResolveSnapshotUrl(raw);
-                        if (resolved is null) continue;
-                        if (await FetchJpegAsync(resolved, ct) is not null)
+                        foundAny = true;
+                        // Feed first: classification needs no
+                        // network fetch, so it is safe even
+                        // when the snapshot check fails.
+                        var streamRaw = WebcamStreamField(cam);
+                        var service = WebcamServiceField(cam);
+                        if (!string.IsNullOrWhiteSpace(streamRaw))
                         {
-                            _discoveredSnapshotUrl = resolved;
-                            Program.Log($"Camera auto-discovery for '{Name}': snapshot URL auto-discovered from the Moonraker webcam list.");
-                            return resolved;
+                            var resolvedStream = ResolveCameraUrl(streamRaw);
+                            if (resolvedStream is not null)
+                            {
+                                _discoveredFeedType = ClassifyFeedType(resolvedStream, service);
+                                if (resolvedStream.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                                    resolvedStream.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                                    _discoveredStreamUrl = resolvedStream;
+                                Program.Log($"Camera auto-discovery for '{Name}': feed discovered from the Moonraker webcam list (type: {_discoveredFeedType}).");
+                            }
                         }
+                        if (string.IsNullOrWhiteSpace(_cfg.SnapshotUrl))
+                        {
+                            var raw = WebcamSnapshotField(cam);
+                            if (!string.IsNullOrWhiteSpace(raw))
+                            {
+                                var resolved = ResolveCameraUrl(raw);
+                                if (resolved is not null && await FetchJpegAsync(resolved, ct) is not null)
+                                {
+                                    _discoveredSnapshotUrl = resolved;
+                                    Program.Log($"Camera auto-discovery for '{Name}': snapshot URL auto-discovered from the Moonraker webcam list.");
+                                }
+                            }
+                        }
+                        break; // first webcam only, as in 2275
                     }
-                    Program.Log($"Camera auto-discovery for '{Name}': Moonraker webcam list had no usable snapshot URL.");
+                    if (!foundAny)
+                        Program.Log($"Camera auto-discovery for '{Name}': Moonraker webcam list had no webcams.");
+                    else if (string.IsNullOrWhiteSpace(_cfg.SnapshotUrl) && _discoveredSnapshotUrl is null)
+                        Program.Log($"Camera auto-discovery for '{Name}': Moonraker webcam list had no usable snapshot URL.");
+                    return; // list answered: no still-path fallback, even on a miss
                 }
-                else
-                {
-                    Program.Log($"Camera auto-discovery for '{Name}': Moonraker webcam list unavailable (HTTP {(int)res.StatusCode}).");
-                }
+                Program.Log($"Camera auto-discovery for '{Name}': Moonraker webcam list unavailable (HTTP {(int)res.StatusCode}).");
             }
         }
         catch (Exception ex)
@@ -302,21 +409,65 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
             Program.Log($"Camera auto-discovery for '{Name}': Moonraker webcam list failed ({ex.Message}).");
         }
 
-        // 2. Common Fluidd/Moonraker still paths, only as fallback.
-        foreach (var path in new[] { "/webcam/?action=snapshot", "/webcam/snapshot" })
+        // 2. Common Fluidd/Moonraker still paths, snapshot only, only as fallback.
+        if (string.IsNullOrWhiteSpace(_cfg.SnapshotUrl))
         {
-            var url = Base + path;
-            if (await FetchJpegAsync(url, ct) is not null)
+            foreach (var path in new[] { "/webcam/?action=snapshot", "/webcam/snapshot" })
             {
-                _discoveredSnapshotUrl = url;
-                Program.Log($"Camera auto-discovery for '{Name}': snapshot URL auto-discovered from a common Moonraker still path.");
-                return url;
+                var url = Base + path;
+                if (await FetchJpegAsync(url, ct) is not null)
+                {
+                    _discoveredSnapshotUrl = url;
+                    Program.Log($"Camera auto-discovery for '{Name}': snapshot URL auto-discovered from a common Moonraker still path.");
+                    return;
+                }
+                Program.Log($"Camera auto-discovery for '{Name}': fallback still path missed.");
             }
-            Program.Log($"Camera auto-discovery for '{Name}': fallback still path missed.");
         }
 
         Program.Log($"Camera auto-discovery for '{Name}': nothing found; no snapshot will be sent until a snapshot URL is set or discovered.");
-        return null;
+    }
+
+    /// <summary>Classify a feed from its scheme, its
+    /// Moonraker service name, and its URL pattern only —
+    /// never by fetching the stream. "mjpeg" covers
+    /// mjpegstreamer / uv4l-mjpeg services and mjpg/mjpeg/
+    /// action=stream URLs (embeddable as an &lt;img&gt; in a
+    /// browser); "webrtc" covers webrtc/go2rtc services and
+    /// URLs (needs a WebRTC player, a future dashboard
+    /// task); "hls" covers .m3u8 URLs (needs an HLS
+    /// player, a future dashboard task); "http" is any
+    /// other HTTP(S) URL a dashboard may try to embed;
+    /// "rtsp" and "other" are browser-unembeddable and
+    /// must fall back to snapshots.</summary>
+    internal static string ClassifyFeedType(string url, string? service)
+    {
+        var u = url.ToLowerInvariant();
+        var s = (service ?? "").ToLowerInvariant();
+        if (u.StartsWith("rtsp://") || u.StartsWith("rtsps://")) return "rtsp";
+        if (s.Contains("webrtc") || s.Contains("go2rtc") || u.Contains("webrtc")) return "webrtc";
+        if (u.Contains(".m3u8") || s.Contains("hls")) return "hls";
+        if (s.Contains("mjpeg") || s.Contains("uv4l") || u.Contains("mjpg") || u.Contains("mjpeg") ||
+            u.Contains("action=stream") || u.Contains("/stream")) return "mjpeg";
+        if (u.StartsWith("http://") || u.StartsWith("https://")) return "http";
+        return "other";
+    }
+
+    /// <summary>Strip any userinfo (username/password)
+    /// from a URL before it is ever sent to the dashboard.
+    /// Returns the original string when it cannot be
+    /// parsed as a URI.</summary>
+    internal static string StripCredentials(string url)
+    {
+        try
+        {
+            var b = new UriBuilder(url) { UserName = "", Password = "" };
+            return b.Uri.ToString();
+        }
+        catch
+        {
+            return url;
+        }
     }
 
     private static IEnumerable<JsonElement> EnumerateWebcams(JsonElement root)
@@ -344,7 +495,24 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
         return null;
     }
 
-    private string? ResolveSnapshotUrl(string raw)
+    private static string? WebcamStreamField(JsonElement cam)
+    {
+        foreach (var field in new[] { "stream_url", "streamUrl", "stream" })
+            if (cam.TryGetProperty(field, out var v) && v.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(v.GetString()))
+                return v.GetString();
+        return null;
+    }
+
+    private static string? WebcamServiceField(JsonElement cam)
+    {
+        if (cam.TryGetProperty("service", out var v) && v.ValueKind == JsonValueKind.String &&
+            !string.IsNullOrWhiteSpace(v.GetString()))
+            return v.GetString();
+        return null;
+    }
+
+    private string? ResolveCameraUrl(string raw)
     {
         var v = raw.Trim();
         if (v.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
