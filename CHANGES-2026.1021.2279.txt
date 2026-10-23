@@ -1,0 +1,58 @@
+C3D Print Bridge - version 2026.1021.2279
+Action1 auto-check tied to the version auto-check.
+NOT pushed to GitHub in this task. NOT deployed. NOT compiled
+(no dotnet on the VM) — brace-balanced only, like 2276-2278.
+
+WHAT IT ADDS
+- When "Automatically update the bridge" is ON (Marlena
+  confirmed Oct 23, 2026 that it is checked), the auto-check
+  cycle (60 seconds after start, then every 24 hours, skipped
+  while a print is running) now also runs an Action1 check,
+  before the Bridge version check, in the same cycle.
+- The Action1 auto-check:
+  - Refreshes the tray menu check mark from live detection.
+  - If an Action1 client is detected: logs that and does
+    nothing else.
+  - If no client is detected and NO installer path is saved:
+    logs that only, and leaves the menu unchecked. It does
+    NOT pop a file picker in the background — the operator
+    picks the Action1 console download manually via the
+    tray menu item, as before.
+  - If no client is detected and an installer path WAS
+    already picked and saved by the operator: attempts the
+    install from that saved file, exactly as the manual
+    menu item does. The Windows admin (UAC) prompt is
+    still the gate — declining it installs nothing, and
+    the check tries again next cycle. A failed attempt
+    shows its result box; a successful one only logs.
+- It never downloads an installer, never embeds an
+  Action1 URL, token, or organisation name, and never
+  installs when no installer was saved by the operator.
+- The auto-check is posted back to the UI thread before
+  it touches menu items, because the auto-update timer
+  runs on a thread-pool thread and WinForms controls are
+  not thread-safe.
+
+CHANGED FILES
+- src/C3DBridge/Program.cs (version only, 2278 -> 2279)
+- src/C3DBridge/TrayApp.cs (Action1 auto-check, UI-thread
+  posting, wired into AutoUpdateCheckAsync after the
+  printing guard and before the version check)
+
+VERIFICATION STILL NEEDED (after push + PC update to 2279)
+1. On the shop PC, update to 2279 (tray Get updates, or
+   the auto-check itself once 2279 is running).
+2. With auto-update ON and no Action1 client and no
+   installer saved: the next auto-check cycle logs an
+   Action1 "not detected, no installer saved" line and
+   pops nothing — the menu stays unchecked.
+3. With an installer saved (tray menu pick first, if not
+   already saved) and no client: the next auto-check
+   cycle attempts the install, the admin prompt appears,
+   and approving it installs the client (menu becomes
+   checked; PC appears in the Action1 console) while
+   declining it installs nothing.
+4. With a client installed: the auto-check cycle logs
+   "client detected" and does nothing else.
+5. A print in progress still skips the whole cycle,
+   including the Action1 check.

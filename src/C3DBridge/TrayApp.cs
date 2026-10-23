@@ -35,11 +35,18 @@ public sealed class TrayApplicationContext : ApplicationContext
     private bool _exitRequested;
     private ToolStripMenuItem? _autoUpdateItem;
     private ToolStripMenuItem? _action1Item;
+    // UI thread context, captured in the constructor (which runs
+    // on the UI thread). The auto-update timer runs on a
+    // thread-pool thread, so the Action1 auto-check is posted
+    // back to this context before it touches menu items or
+    // shows anything — WinForms controls are not thread-safe.
+    private readonly SynchronizationContext? _uiContext;
     private System.Threading.Timer? _autoUpdateTimer;
     private bool _autoUpdateRunning;
 
     public TrayApplicationContext()
     {
+        _uiContext = SynchronizationContext.Current;
         // Hide the console window: tray mode is icon-only.
         try { ShowWindow(GetConsoleWindow(), 0); } catch { /* console may not exist */ }
 
@@ -1854,6 +1861,43 @@ public sealed class TrayApplicationContext : ApplicationContext
             MessageBoxButtons.OK, ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
+    // Action1 auto-check (2279, Marlena approved Oct 23, 2026:
+    // "Yes add it" to tying Action1 to the version auto-check).
+    // Runs on the UI thread (see _uiContext). It only DETECTS
+    // and, when an installer was already picked and saved by
+    // the operator, attempts the install — the Windows admin
+    // (UAC) prompt is still the gate, so declining it installs
+    // nothing, and the check simply tries again next cycle.
+    // It never downloads an installer, never picks a file in
+    // the background, and never installs when no installer
+    // path is saved — in that case it only logs and leaves
+    // the tray menu unchecked, so the operator can pick the
+    // console download manually.
+    private async Task AutoCheckAction1Async(BridgeConfig cfg)
+    {
+        RefreshAction1Menu();
+        if (Action1Client.IsInstalled())
+        {
+            Program.Log("Action1 auto-check: client detected.");
+            return;
+        }
+        var installerPath = cfg.Action1InstallerPath;
+        if (string.IsNullOrWhiteSpace(installerPath) || !File.Exists(installerPath))
+        {
+            Program.Log("Action1 auto-check: client not detected, and no installer is saved — use the tray menu Install Action1 client… item to pick your Action1 console download.");
+            return;
+        }
+        Program.Log($"Action1 auto-check: client not detected, installing from saved installer {Path.GetFileName(installerPath)} (admin prompt will appear; declining it installs nothing).");
+        var (ok, detail) = await Action1Client.InstallAsync(installerPath);
+        RefreshAction1Menu();
+        Program.Log($"Action1 auto-check result: {detail}");
+        if (!ok)
+        {
+            MessageBox.Show(detail, "C3D Print Bridge — Action1 client",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
     /// <summary>Silent auto-update check. Unlike manual Get
     /// updates, this never pops a Yes/No prompt and never pops
     /// a result box when there is nothing to do or the check
@@ -1878,6 +1922,26 @@ public sealed class TrayApplicationContext : ApplicationContext
             {
                 Program.Log("Auto-update check skipped this cycle: a print is in progress.");
                 return;
+            }
+            // Action1 auto-check rides with the version auto-check
+            // (2279): same cycle, same printing guard, on the UI
+            // thread, before the version check runs. If a Bridge
+            // update is then found, the Bridge still updates
+            // normally afterwards.
+            if (_uiContext is null)
+            {
+                await AutoCheckAction1Async(cfg);
+            }
+            else
+            {
+                var tcs = new TaskCompletionSource();
+                _uiContext.Post(async _ =>
+                {
+                    try { await AutoCheckAction1Async(cfg); }
+                    catch (Exception ex) { Program.Log($"Action1 auto-check failed (continuing): {ex.Message}"); }
+                    tcs.SetResult();
+                }, null);
+                await tcs.Task;
             }
             var result = await Updater.CheckForUpdateAsync();
             switch (result.Kind)
