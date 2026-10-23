@@ -1,0 +1,47 @@
+Proprietary Licence — All Rights Reserved
+
+Copyright © 2026 Creat3d World, USA
+
+LICENCE OF USE
+C3D Print Bridge is licensed for use by Creat3d World on its
+own shop computers, to connect its own printers to its own
+shipping dashboard. It may not be redistributed, resold,
+rented, or used by any other person or business without
+written permission from Creat3d World. The licence covers
+use of the software as provided; it does not transfer
+ownership of the software, and it does not grant any right
+to Creat3d World's product files, designs, or trademarks.
+
+No other licence is granted, expressly or by implication.
+This is not an open-source licence. Copying, modifying,
+or distributing this software, in whole or in part, without
+written permission from Creat3d World is prohibited.
+
+DISCLAIMER
+This software is provided "as is", without warranty of any
+kind, express or implied, including warranties of
+merchantability or fitness for a particular purpose. Use
+is at the operator's own risk. The bridge is a thin relay
+only: it never slices a file, never decides which printer
+runs a job, and never orders a queue — those decisions
+come from the dashboard. The operator remains responsible
+for confirming a print is safe to start, including bed
+state and filament, before any job runs. Creat3d World is
+not liable for any loss, damage, or failed print arising
+from use of this software, to the fullest extent allowed
+by law.
+
+GOVERNING LAW
+This licence and disclaimer are governed by the laws of
+the United States and the State of Florida, with venue in
+Duval County, Florida, unless otherwise required by law.
+
+LEGAL NOTES
+Printer credentials, access codes, and API keys used by
+the bridge are stored only on the local shop computer and
+are never sent to any third party except the printer or
+dashboard they belong to. Bambu Lab, Snapmaker, Action1,
+and all other product and company names mentioned in this
+software are trademarks of their respective owners. No
+affiliation with, or endorsement by, any of those owners
+is claimed or implied.
