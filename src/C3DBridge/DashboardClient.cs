@@ -188,6 +188,80 @@ public sealed class DashboardClient : IDisposable
         return (ok, status);
     }
 
+    /// <summary>0.9.6: poll the dashboard for pending camera
+    /// refresh requests (farm/camera-refresh, bridge-key
+    /// auth). Returns IP (lower-cased) -> request unix time,
+    /// or null on any failure (the caller then falls back to
+    /// its normal once-a-minute snapshot cadence). No
+    /// credentials, URLs, or snapshots are in this reply.</summary>
+    public async Task<Dictionary<string, long>?> GetCameraRefreshRequestsAsync(CancellationToken ct)
+    {
+        var (ok, _, body) = await SendAsync(HttpMethod.Get, "/wp-json/c3d-shipping/v1/farm/camera-refresh", null, ct);
+        if (!ok || string.IsNullOrWhiteSpace(body)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("requests", out var reqs) || reqs.ValueKind != JsonValueKind.Object) return null;
+            var out_ = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            foreach (var prop in reqs.EnumerateObject())
+                if (prop.Value.ValueKind == JsonValueKind.Number && prop.Value.TryGetInt64(out var v))
+                    out_[prop.Name.ToLowerInvariant()] = v;
+            return out_;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Farm build, first stage: poll GET farm/jobs.
+    /// Returns null on any failure (caller logs the reason).
+    /// The dispatch field is the per-job command from the
+    /// dashboard dispatch map, flattened into each job.</summary>
+    public async Task<(List<FarmJob>? Jobs, string? Problem)> PollFarmJobsAsync(CancellationToken ct)
+    {
+        var (ok, status, body) = await SendAsync(HttpMethod.Get, "/wp-json/c3d-shipping/v1/farm/jobs", null, ct);
+        if (!ok)
+        {
+            if (status == System.Net.HttpStatusCode.NotFound)
+                return (null, "Dashboard farm endpoints are not installed yet.");
+            if (status == System.Net.HttpStatusCode.Unauthorized)
+                return (null, "Bridge API key was rejected by the dashboard.");
+            return (null, $"Farm job poll failed ({(int)status}): {Trim(body)}");
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var jobs = new List<FarmJob>();
+            if (doc.RootElement.TryGetProperty("jobs", out var arr) && arr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in arr.EnumerateArray())
+                {
+                    var job = JsonSerializer.Deserialize<FarmJob>(el.GetRawText(), JsonOptions);
+                    if (job is not null) jobs.Add(job);
+                }
+            }
+            // The dashboard also returns a dispatch map; the
+            // per-job dispatch field above already carries it,
+            // so no second parse is needed here.
+            return (jobs, null);
+        }
+        catch (Exception ex)
+        {
+            return (null, $"Dashboard returned a farm job list the bridge could not read: {ex.Message}");
+        }
+    }
+
+    /// <summary>Farm build: report a farm job outcome to POST
+    /// farm/job-report. Status is started / paused / finished /
+    /// failed, per the dashboard route. Used only once a farm
+    /// job actually starts or fails on a printer — never for
+    /// a missing-file dispatch, which is logged locally and
+    /// left queued instead (see FarmPoller).</summary>
+    public async Task<bool> ReportFarmJobAsync(string jobId, string status, string reason, double? filamentUsedG, CancellationToken ct)
+    {
+        var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/job-report",
+            new { job_id = jobId, status, reason, filament_used_g = filamentUsedG }, ct);
+        return ok;
+    }
+
     public async Task<bool> ReportJobAsync(JobReport report, CancellationToken ct)
     {
         var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/job-report",

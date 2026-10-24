@@ -43,6 +43,7 @@ public sealed class Worker
     private readonly BridgeConfig _cfg;
     private readonly PrinterRegistry _printers;
     private readonly DashboardClient _dashboard;
+    private readonly FarmPoller _farmPoller;
     private readonly Dictionary<string, ActiveJob> _active = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _terminalReported = new(StringComparer.OrdinalIgnoreCase);
     private List<DashboardJob> _lastPollJobs = new();
@@ -65,11 +66,16 @@ public sealed class Worker
         _cfg = cfg;
         _printers = printers;
         _dashboard = dashboard;
+        _farmPoller = new FarmPoller(dashboard, printers);
     }
 
     public async Task RunAsync(CancellationToken ct)
     {
         Program.Log($"Bridge '{_cfg.BridgeName}' running: {_printers.All.Count} printer(s) configured, dashboard {_cfg.DashboardBaseUrl}.");
+        // Non-3D printers (Oct 24, 2026): logged only. They are
+        // not in _printers, so no 3D job path can ever pick one.
+        if (_cfg.Non3DPrinters.Count > 0)
+            Program.Log($"Non-3D printers configured (label/document only, never 3D jobs): {string.Join(", ", _cfg.Non3DPrinters)}.");
         // Camera auto-discovery (2275): once per Worker startup.
         // This is also the "when a printer is added" trigger:
         // Configure saves restart the Worker (TrayApp
@@ -148,6 +154,12 @@ public sealed class Worker
                             Program.Log("Dashboard job poll recovered.");
                         }
                         await ExecuteReadyJobsAsync(statuses, ct);
+                        // Farm build, first stage: poll farm/jobs
+                        // too. FarmPoller never starts a print
+                        // without a verified file (farm jobs carry
+                        // none yet), so this only logs dispatches
+                        // and leaves missing-file jobs queued.
+                        await _farmPoller.PollAsync(statuses, ct);
                     }
                     else if (problem is not null && ShouldLogProblem(problem))
                     {
@@ -187,6 +199,7 @@ public sealed class Worker
     // evidence when the printer is idle, and a printing
     // printer's bed is occupied by definition.
     private readonly Dictionary<string, DateTime> _lastBedSnapshotAttempt = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _cameraRefreshServed = new(StringComparer.OrdinalIgnoreCase);
     private bool _bedSnapshotEndpointMissing;
 
     private bool ShouldLogProblem(string problem)
@@ -484,12 +497,28 @@ public sealed class Worker
         IReadOnlyDictionary<string, PrinterStatus> statuses, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
+        // 0.9.6: pending admin Refresh requests (best effort;
+        // null on any failure means normal cadence only).
+        Dictionary<string, long>? refreshRequests = null;
+        try { refreshRequests = await _dashboard.GetCameraRefreshRequestsAsync(ct); } catch { refreshRequests = null; }
         foreach (var adapter in _printers.All)
         {
             if (!statuses.TryGetValue(adapter.Name, out var live) ||
                 !string.Equals(live.State, "idle", StringComparison.OrdinalIgnoreCase))
                 continue;
-            if (_lastBedSnapshotAttempt.TryGetValue(adapter.Name, out var last) &&
+            // A fresh (unserved) refresh request for this
+            // printer bypasses the once-a-minute throttle
+            // exactly once; normal cadence applies otherwise.
+            var refreshRequested = false;
+            if (refreshRequests is not null &&
+                refreshRequests.TryGetValue(adapter.Ip.ToLowerInvariant(), out var reqUnix) &&
+                (!_cameraRefreshServed.TryGetValue(adapter.Ip.ToLowerInvariant(), out var servedUnix) || reqUnix > servedUnix))
+            {
+                refreshRequested = true;
+                _cameraRefreshServed[adapter.Ip.ToLowerInvariant()] = reqUnix;
+            }
+            if (!refreshRequested &&
+                _lastBedSnapshotAttempt.TryGetValue(adapter.Name, out var last) &&
                 now - last < TimeSpan.FromMinutes(1))
                 continue;
             _lastBedSnapshotAttempt[adapter.Name] = now;

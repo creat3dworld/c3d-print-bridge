@@ -55,6 +55,20 @@ public sealed record PrinterConfig
     /// feed-type label and, for HTTP feeds, a
     /// credential-stripped feed URL are sent.</summary>
     [JsonPropertyName("stream_auto_discovered")] public bool StreamAutoDiscovered { get; init; }
+    /// <summary>0.9.6 Snapmaker-first camera fields (local
+    /// config only, never sent to the dashboard except as
+    /// the snapshot JPEG itself and its source/feed labels).
+    /// When set, these win over the generic snapshot_url /
+    /// stream_url for a Snapmaker printer only, so a U1 can
+    /// have its own webcam URLs without touching Bambu
+    /// printers. When blank, the generic fields apply.
+    /// Paxx IS installed on Marlena's U1 (Oct 23, 2026), so
+    /// the Klipper/Moonraker webcam path is available; the
+    /// actual endpoint on her printer is still unverified
+    /// until a live probe runs from the shop PC via
+    /// Action1 — no endpoint is claimed verified here.</summary>
+    [JsonPropertyName("snapmaker_snapshot_url")] public string? SnapmakerSnapshotUrl { get; init; }
+    [JsonPropertyName("snapmaker_stream_url")] public string? SnapmakerStreamUrl { get; init; }
     /// <summary>Bambu only: printer serial number (for MQTT topics).</summary>
     [JsonPropertyName("serial")] public string? Serial { get; init; }
     /// <summary>Bambu only: LAN access code from the printer's screen.
@@ -102,6 +116,12 @@ public sealed record BridgeConfig
     /// found. Stored in bridge-config.json, preserved by the
     /// installer like every other local setting.</summary>
     [JsonPropertyName("auto_update")] public bool AutoUpdate { get; init; }
+    /// <summary>Non-3D printer queues the owner picked by Windows
+    /// queue name (Oct 24, 2026). These are NOT 3D printers and
+    /// are never in PrinterRegistry: no 3D job, farm job, or
+    /// safety check ever touches them. Label/document output
+    /// only, once a dashboard route exists for it.</summary>
+    [JsonPropertyName("non3d_printers")] public List<string> Non3DPrinters { get; init; } = new();
     /// <summary>Action1 agent installer (2277). LOCAL PATH ONLY, set
     /// when the operator picks the account-tied installer they
     /// downloaded from their own Action1 console. Never a URL,
@@ -144,6 +164,28 @@ public sealed record DashboardJob
     [JsonPropertyName("file_url")] public string FileUrl { get; init; } = "";
     [JsonPropertyName("file_name")] public string FileName { get; init; } = "";
     [JsonPropertyName("file_sha256")] public string FileSha256 { get; init; } = "";
+}
+
+/// <summary>A Print Farm job from GET farm/jobs, plus its
+/// dispatch command. Farm jobs carry NO file yet — see
+/// FarmPoller: the bridge never guesses one, so a dispatched
+/// farm job is logged and left queued until the dashboard
+/// file-delivery route lands.</summary>
+public sealed record FarmJob
+{
+    [JsonPropertyName("job_id")] public string JobId { get; init; } = "";
+    [JsonPropertyName("title")] public string Title { get; init; } = "";
+    [JsonPropertyName("order_id")] public long OrderId { get; init; }
+    [JsonPropertyName("printer")] public string Printer { get; init; } = "";
+    [JsonPropertyName("printer_ip")] public string PrinterIp { get; init; } = "";
+    [JsonPropertyName("printer_type")] public string PrinterType { get; init; } = "";
+    [JsonPropertyName("material")] public string Material { get; init; } = "";
+    [JsonPropertyName("color")] public string Color { get; init; } = "";
+    [JsonPropertyName("qty")] public int Qty { get; init; } = 1;
+    [JsonPropertyName("status")] public string Status { get; init; } = "";
+    [JsonPropertyName("bed_confirmed")] public bool BedConfirmed { get; init; }
+    [JsonPropertyName("ams_confirmed")] public bool AmsConfirmed { get; init; }
+    [JsonPropertyName("dispatch")] public string Dispatch { get; init; } = "";
 }
 
 public sealed record DashboardJobItem
