@@ -68,6 +68,13 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
     // to the local config (with SnapshotAutoDiscovered=true).
     private string? _discoveredSnapshotUrl;
     private string? _discoveredStreamUrl; // HTTP(S) only; RTSP/other feeds keep a null URL here
+    // 0.9.6: a Moonraker webcam snapshot URL that has
+    // actually returned a valid JPEG in this run. A verified
+    // Klipper/Moonraker endpoint is preferred over an
+    // owner-set snapshot_url; the owner URL is the fallback
+    // when no endpoint has verified. Nothing here claims an
+    // endpoint is verified on Marlena's U1 until a live probe
+    // from the shop PC via Action1 confirms it.
     private string _discoveredFeedType = "none";
     private bool _cameraDiscoveryAttempted;
     public string SnapshotSource => _discoveredSnapshotUrl is not null || _cfg.SnapshotAutoDiscovered
@@ -76,7 +83,9 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
     /// over a discovered one; a discovered RTSP/other feed
     /// still reports its type even though its URL is never
     /// sent to the dashboard.</summary>
-    public string FeedType => !string.IsNullOrWhiteSpace(_cfg.StreamUrl)
+    public string FeedType => !string.IsNullOrWhiteSpace(_cfg.SnapmakerStreamUrl)
+        ? ClassifyFeedType(_cfg.SnapmakerStreamUrl, null)
+        : !string.IsNullOrWhiteSpace(_cfg.StreamUrl)
         ? ClassifyFeedType(_cfg.StreamUrl, null) : _discoveredFeedType;
     /// <summary>Dashboard-facing feed URL (2276): HTTP(S)
     /// only, credential-stripped. Null for RTSP/other
@@ -85,7 +94,7 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
     {
         get
         {
-            var raw = !string.IsNullOrWhiteSpace(_cfg.StreamUrl) ? _cfg.StreamUrl : _discoveredStreamUrl;
+            var raw = !string.IsNullOrWhiteSpace(_cfg.SnapmakerStreamUrl) ? _cfg.SnapmakerStreamUrl : !string.IsNullOrWhiteSpace(_cfg.StreamUrl) ? _cfg.StreamUrl : _discoveredStreamUrl;
             if (string.IsNullOrWhiteSpace(raw)) return null;
             if (!raw.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
                 !raw.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
@@ -268,11 +277,84 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
         }
     }
 
+    /// <summary>Farm build: chamber/cavity light control, via
+    /// Moonraker gcode SET_LED on the verified U1 light object
+    /// "led cavity_led" (confirmed on the live U1, Oct 23,
+    /// 2026: color_data white channel at 1.0 when on). This
+    /// is a light switch only — it never passes a bed check.
+    /// A dark snapshot still never auto-passes; turning the
+    /// light on just makes the next snapshot actually visible
+    /// so a human can confirm the bed from it. Returns
+    /// (ok, reason); a failure never claims the light changed.</summary>
+    public async Task<(bool Ok, string Reason)> SetCavityLedAsync(bool on, CancellationToken ct)
+    {
+        try
+        {
+            var script = on
+                ? "SET_LED LED=cavity_led WHITE=1"
+                : "SET_LED LED=cavity_led WHITE=0";
+            var body = JsonSerializer.Serialize(new { script });
+            var req = new HttpRequestMessage(HttpMethod.Post, Base + "/printer/gcode/script")
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            };
+            if (!await AddAuthAsync(req, ct))
+                return (false, $"Paxx login failed for '{Name}': check the Paxx username/password in Configure.");
+            using var res = await _http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+                return (false, $"Moonraker light command on '{Name}' answered {(int)res.StatusCode}: {Trim(await res.Content.ReadAsStringAsync(ct))}");
+            return (true, "");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"Light command to '{Name}' failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>0.9.6 Snapmaker camera URL preference, in
+    /// order: (1) a Moonraker webcam snapshot URL verified
+    /// in this run (see TryGetSnapshotAsync, which records
+    /// it only after a real JPEG returns); (2) the
+    /// Snapmaker-specific snapmaker_snapshot_url, when set;
+    /// (3) the generic snapshot_url; (4) a discovered URL.
+    /// Paxx IS installed on Marlena's U1, so the Klipper/
+    /// Moonraker path is available, but no endpoint is
+    /// treated as verified until it actually answers.</summary>
+    private string? EffectiveSnapshotUrl =>
+        !string.IsNullOrWhiteSpace(_verifiedMoonrakerSnapshotUrl) ? _verifiedMoonrakerSnapshotUrl
+        : !string.IsNullOrWhiteSpace(_cfg.SnapmakerSnapshotUrl) ? _cfg.SnapmakerSnapshotUrl
+        : !string.IsNullOrWhiteSpace(_cfg.SnapshotUrl) ? _cfg.SnapshotUrl
+        : _discoveredSnapshotUrl;
+
+    private string? _verifiedMoonrakerSnapshotUrl;
+
     public async Task<byte[]?> TryGetSnapshotAsync(CancellationToken ct)
     {
-        var url = !string.IsNullOrWhiteSpace(_cfg.SnapshotUrl) ? _cfg.SnapshotUrl : _discoveredSnapshotUrl;
-        if (string.IsNullOrWhiteSpace(url)) return null;
-        return await FetchJpegAsync(url, ct);
+        // Try the verified Moonraker endpoint first, then
+        // each fallback in EffectiveSnapshotUrl order, then
+        // the common Moonraker still paths as a last resort.
+        // A candidate counts as verified only when it
+        // returns a real JPEG (FetchJpegAsync enforces the
+        // 100B-2MB JPEG check). Idle-only and once-a-minute
+        // throttling live in the Worker, not here.
+        var candidates = new List<string?>();
+        if (!string.IsNullOrWhiteSpace(EffectiveSnapshotUrl)) candidates.Add(EffectiveSnapshotUrl);
+        if (!string.IsNullOrWhiteSpace(_cfg.SnapmakerSnapshotUrl) && !candidates.Contains(_cfg.SnapmakerSnapshotUrl)) candidates.Add(_cfg.SnapmakerSnapshotUrl);
+        if (!string.IsNullOrWhiteSpace(_cfg.SnapshotUrl) && !candidates.Contains(_cfg.SnapshotUrl)) candidates.Add(_cfg.SnapshotUrl);
+        if (!string.IsNullOrWhiteSpace(_discoveredSnapshotUrl) && !candidates.Contains(_discoveredSnapshotUrl)) candidates.Add(_discoveredSnapshotUrl);
+        foreach (var url in candidates)
+        {
+            var bytes = await FetchJpegAsync(url!, ct);
+            if (bytes is not null)
+            {
+                // A Moonraker-origin URL that answered is now
+                // the verified endpoint for the rest of this run.
+                if (url!.StartsWith(Base, StringComparison.OrdinalIgnoreCase))
+                    _verifiedMoonrakerSnapshotUrl = url;
+                return bytes;
+            }
+        }
+        return null;
     }
 
     /// <summary>Camera auto-discovery (2275 snapshot,
