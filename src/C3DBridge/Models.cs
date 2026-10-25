@@ -188,6 +188,20 @@ public sealed record FarmJob
     [JsonPropertyName("dispatch")] public string Dispatch { get; init; } = "";
 }
 
+/// <summary>One queued Facebook label-PDF OCR job from GET
+/// bridge/ocr-jobs (dashboard 2026.1024.2046-fb-ocr). The PDF
+/// arrives base64-encoded over the authenticated channel; the
+/// bridge renders it locally, OCRs it locally, and posts ONLY
+/// extracted text back. The PDF and its image never leave the
+/// shop PC except as that text.</summary>
+public sealed record OcrJob
+{
+    [JsonPropertyName("job_id")] public string JobId { get; init; } = "";
+    [JsonPropertyName("gmail_id")] public string GmailId { get; init; } = "";
+    [JsonPropertyName("pdf_b64")] public string PdfB64 { get; init; } = "";
+    [JsonPropertyName("file_name")] public string FileName { get; init; } = "";
+}
+
 public sealed record DashboardJobItem
 {
     [JsonPropertyName("name")] public string Name { get; init; } = "";

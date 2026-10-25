@@ -44,6 +44,7 @@ public sealed class Worker
     private readonly PrinterRegistry _printers;
     private readonly DashboardClient _dashboard;
     private readonly FarmPoller _farmPoller;
+    private readonly OcrPoller _ocrPoller;
     private readonly Dictionary<string, ActiveJob> _active = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _terminalReported = new(StringComparer.OrdinalIgnoreCase);
     private List<DashboardJob> _lastPollJobs = new();
@@ -67,6 +68,7 @@ public sealed class Worker
         _printers = printers;
         _dashboard = dashboard;
         _farmPoller = new FarmPoller(dashboard, printers);
+        _ocrPoller = new OcrPoller(dashboard);
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -160,6 +162,13 @@ public sealed class Worker
                         // none yet), so this only logs dispatches
                         // and leaves missing-file jobs queued.
                         await _farmPoller.PollAsync(statuses, ct);
+                        // Bridge OCR stage: poll bridge/ocr-jobs
+                        // too, on the same job-poll tick as the
+                        // farm poller. OcrPoller never starts a
+                        // print, never touches a printer, and
+                        // only posts extracted text back — OCR
+                        // jobs are paperwork only.
+                        await _ocrPoller.PollAsync(ct);
                     }
                     else if (problem is not null && ShouldLogProblem(problem))
                     {

@@ -262,6 +262,63 @@ public sealed class DashboardClient : IDisposable
         return ok;
     }
 
+    /// <summary>Bridge OCR stage: poll GET bridge/ocr-jobs.
+    /// Returns null on any failure (caller logs the reason).
+    /// Response shape, per the dashboard 2046 spec:
+    /// { "jobs": [ { "job_id", "gmail_id", "pdf_b64",
+    /// "file_name" } ] }. No new auth: the same Bearer key
+    /// as every other request, via Request().</summary>
+    public async Task<(List<OcrJob>? Jobs, string? Problem)> PollOcrJobsAsync(CancellationToken ct)
+    {
+        var (ok, status, body) = await SendAsync(HttpMethod.Get, "/wp-json/c3d-shipping/v1/bridge/ocr-jobs", null, ct);
+        if (!ok)
+        {
+            if (status == System.Net.HttpStatusCode.NotFound)
+                return (null, "Dashboard OCR endpoints are not installed yet.");
+            if (status == System.Net.HttpStatusCode.Unauthorized)
+                return (null, "Bridge API key was rejected by the dashboard.");
+            return (null, $"OCR job poll failed ({(int)status}): {Trim(body)}");
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var jobs = new List<OcrJob>();
+            if (doc.RootElement.TryGetProperty("jobs", out var arr) && arr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in arr.EnumerateArray())
+                {
+                    var job = JsonSerializer.Deserialize<OcrJob>(el.GetRawText(), JsonOptions);
+                    if (job is not null) jobs.Add(job);
+                }
+            }
+            return (jobs, null);
+        }
+        catch (Exception ex)
+        {
+            return (null, $"Dashboard returned an OCR job list the bridge could not read: {ex.Message}");
+        }
+    }
+
+    /// <summary>Bridge OCR stage: report one OCR job to POST
+    /// bridge/ocr-report. Request shape, per the dashboard
+    /// 2046 spec: { "job_id", "text", "engine": "tesseract" }.
+    /// ONLY extracted text is ever sent — never the PDF, never
+    /// the rendered image, never any other PDF content.
+    /// NOTE (honest limit): the dashboard route today reads
+    /// only job_id and text and marks the job done on any
+    /// report, so the status/reason fields below are ignored
+    /// server-side for now — but sending the report is still
+    /// what stops a failed job being re-sent in a loop, and
+    /// the reason is logged locally by the caller. A future
+    /// dashboard change may store the reason.</summary>
+    public async Task<(bool Ok, string Reason)> ReportOcrAsync(
+        string jobId, string text, string engine, string status, string reason, CancellationToken ct)
+    {
+        var (ok, code, body) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/ocr-report",
+            new { job_id = jobId, text, engine, status, reason }, ct);
+        return ok ? (true, "") : (false, $"OCR report answered {(int)code}: {Trim(body)}");
+    }
+
     public async Task<bool> ReportJobAsync(JobReport report, CancellationToken ct)
     {
         var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/job-report",
