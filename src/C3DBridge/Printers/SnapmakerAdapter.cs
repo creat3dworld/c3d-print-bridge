@@ -105,6 +105,10 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
     public string Name => _cfg.Name;
     public string Type => _cfg.Type;
     public string Ip => _cfg.Ip;
+    // 2026.1030.1511-farm-dedupe: Moonraker exposes no factory
+    // serial, so the learned Moonraker hostname is this printer's
+    // stable identity key; the configured serial is the fallback.
+    public string SerialKey => !string.IsNullOrWhiteSpace(_cfg.MoonrakerHostname) ? _cfg.MoonrakerHostname : (_cfg.Serial ?? "");
 
     public SnapmakerAdapter(PrinterConfig cfg)
     {
@@ -196,8 +200,14 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
                 "error" => "error",
                 _ => "error",
             };
+            // AUTO-START BUILD: when print_stats.state is
+            // "error", print_stats.message carries the related
+            // error message (Moonraker docs: "Basic Print
+            // Status"). It is reported verbatim — never
+            // mapped to a meaning the bridge does not know.
+            var psMessage = ps?.TryGetProperty("message", out var m) == true ? m.GetString() ?? "" : "";
             var detail = stateRaw is "" or "printing" or "paused" or "standby" or "complete" or "cancelled" or "error"
-                ? ""
+                ? (stateRaw == "error" && !string.IsNullOrWhiteSpace(psMessage) ? psMessage : "")
                 : $"Unrecognized Moonraker print state '{stateRaw}'.";
 
             double? percent = null;
@@ -213,7 +223,13 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
                 Name = Name,
                 Type = Type,
                 Ip = Ip,
+                Serial = SerialKey,
                 State = state,
+                // AUTO-START BUILD: the raw print_stats.state
+                // word survives beside the mapped state, so
+                // "complete" is visible as a finish instead of
+                // flat "idle".
+                NativeState = stateRaw,
                 ProgressPercent = percent,
                 Detail = detail,
                 Ams = new AmsState
@@ -227,6 +243,263 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
         catch (Exception ex)
         {
             return Offline($"Could not reach Moonraker on '{Name}' at {Base}: {ex.Message}");
+        }
+    }
+
+    // BRIDGE-READS BUILD — per-toolhead nozzle query. UNCONFIRMED on
+    // the Paxx-modified U1 until a live probe proves it: the query
+    // is GET /printer/objects/query?configfile, and diameters are
+    // read from result.status.configfile.config.<section>.nozzle_diameter
+    // (falling back to result.status.configfile.<section>.nozzle_diameter
+    // for Moonraker shape variants). Klipper convention: "extruder"
+    // is toolhead 0, "extruder1" toolhead 1, and so on. Any failure,
+    // missing section, or non-numeric value yields an EMPTY map
+    // (unknown) — never an invented diameter. Results are cached
+    // 10 minutes: nozzle hardware changes are rare and manual.
+    // FILAMENT PROBE (same response): configfile section names are
+    // scanned for filament-related names. Moonraker exposes no
+    // verified U1 RFID filament endpoint, so the expected result is
+    // nothing found and AMS stays unknown. If a filament section
+    // ever appears it is logged once for a human to verify — it is
+    // NOT treated as filament state here.
+    private Dictionary<string, double> _nozzleCache = new();
+    private DateTime _nozzleCacheAt = DateTime.MinValue;
+    private bool _filamentProbeLogged;
+
+    public async Task<Dictionary<string, double>> QueryNozzleDiametersAsync(CancellationToken ct)
+    {
+        if (_nozzleCache.Count > 0 && DateTime.UtcNow - _nozzleCacheAt < TimeSpan.FromMinutes(10))
+            return new Dictionary<string, double>(_nozzleCache);
+        var found = new Dictionary<string, double>();
+        try
+        {
+            var req = new HttpRequestMessage(HttpMethod.Get,
+                Base + "/printer/objects/query?configfile");
+            if (!await AddAuthAsync(req, ct))
+                return found;
+            using var res = await _http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+                return found;
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+            if (!doc.RootElement.TryGetProperty("result", out var result) ||
+                !result.TryGetProperty("status", out var status) ||
+                !status.TryGetProperty("configfile", out var configfile))
+                return found;
+            JsonElement sections = configfile;
+            if (configfile.TryGetProperty("config", out var cfg) && cfg.ValueKind == JsonValueKind.Object)
+                sections = cfg;
+            var sectionIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["extruder"] = "0",
+                ["extruder1"] = "1",
+                ["extruder2"] = "2",
+                ["extruder3"] = "3",
+            };
+            foreach (var section in sections.EnumerateObject())
+            {
+                if (!_filamentProbeLogged && section.Name.Contains("filament", StringComparison.OrdinalIgnoreCase))
+                {
+                    _filamentProbeLogged = true;
+                    Program.Log($"[nozzle] Configfile on '{Name}' has a filament-related section '{section.Name}': not treated as filament state — needs a human to verify what it means before any AMS use.");
+                }
+                if (!sectionIndex.TryGetValue(section.Name, out var toolIndex))
+                    continue;
+                if (section.Value.ValueKind != JsonValueKind.Object)
+                    continue;
+                if (section.Value.TryGetProperty("nozzle_diameter", out var dia) &&
+                    dia.ValueKind == JsonValueKind.Number &&
+                    dia.TryGetDouble(out var mm) && mm > 0)
+                    found[toolIndex] = mm;
+            }
+        }
+        catch
+        {
+            return found;
+        }
+        if (found.Count > 0)
+        {
+            _nozzleCache = new Dictionary<string, double>(found);
+            _nozzleCacheAt = DateTime.UtcNow;
+        }
+        return found;
+    }
+
+    // FLUIDD SLICE 1 — Moonraker thermals / files / history.
+    // Object names are DISCOVERED, not assumed: objects/list
+    // is queried first and only temperature-bearing objects
+    // actually present are queried (extruder*, heater_bed,
+    // temperature_sensor*). The screenshot's "Cavity" sensor
+    // has no assumed object name — if discovery does not
+    // find it, it is simply absent (unknown), never invented.
+    // Display names are derived from the object name
+    // (heater_bed -> "Heater Bed", temperature_sensor X -> X,
+    // extruder -> "Extruder", extruder1 -> "Extruder1").
+    // Any failure yields an empty list (thermals) — never a
+    // guessed temperature. Files/history are 5-minute cached
+    // and keep their last good values on a transient failure;
+    // null means never successfully fetched (dashboard
+    // renders "Not available").
+    private List<PrinterFile>? _filesCache;
+    private DateTime _filesCacheAt = DateTime.MinValue;
+    private List<JobHistoryEntry>? _historyCache;
+    private DateTime _historyCacheAt = DateTime.MinValue;
+
+    private static string ThermalDisplayName(string obj)
+    {
+        if (obj == "heater_bed") return "Heater Bed";
+        if (obj.StartsWith("temperature_sensor ", StringComparison.Ordinal))
+            return obj["temperature_sensor ".Length..];
+        if (obj.Length > 0)
+            return char.ToUpperInvariant(obj[0]) + obj[1..];
+        return obj;
+    }
+
+    public async Task<List<ThermalReading>> QueryThermalsAsync(CancellationToken ct)
+    {
+        var found = new List<ThermalReading>();
+        try
+        {
+            var listReq = new HttpRequestMessage(HttpMethod.Get, Base + "/printer/objects/list");
+            if (!await AddAuthAsync(listReq, ct))
+                return found;
+            using var listRes = await _http.SendAsync(listReq, ct);
+            if (!listRes.IsSuccessStatusCode)
+                return found;
+            using var listDoc = JsonDocument.Parse(await listRes.Content.ReadAsStringAsync(ct));
+            if (!listDoc.RootElement.TryGetProperty("result", out var listResult) ||
+                !listResult.TryGetProperty("objects", out var objects) ||
+                objects.ValueKind != JsonValueKind.Array)
+                return found;
+            var wanted = new List<string>();
+            foreach (var o in objects.EnumerateArray())
+            {
+                var name = o.GetString() ?? "";
+                if (name == "heater_bed" || name.StartsWith("extruder", StringComparison.Ordinal) ||
+                    name.StartsWith("temperature_sensor", StringComparison.Ordinal))
+                    wanted.Add(name);
+            }
+            if (wanted.Count == 0)
+                return found;
+            var query = string.Join("&", wanted.Select(w => Uri.EscapeDataString(w)));
+            var req = new HttpRequestMessage(HttpMethod.Get, Base + "/printer/objects/query?" + query);
+            if (!await AddAuthAsync(req, ct))
+                return found;
+            using var res = await _http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+                return found;
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+            if (!doc.RootElement.TryGetProperty("result", out var result) ||
+                !result.TryGetProperty("status", out var status))
+                return found;
+            foreach (var obj in status.EnumerateObject())
+            {
+                if (obj.Value.ValueKind != JsonValueKind.Object)
+                    continue;
+                double? actual = null, target = null;
+                if (obj.Value.TryGetProperty("temperature", out var t) && t.ValueKind == JsonValueKind.Number && t.TryGetDouble(out var td))
+                    actual = td;
+                if (obj.Value.TryGetProperty("target", out var tg) && tg.ValueKind == JsonValueKind.Number && tg.TryGetDouble(out var tgd))
+                    target = tgd;
+                found.Add(new ThermalReading { Name = ThermalDisplayName(obj.Name), Actual = actual, Target = target });
+            }
+        }
+        catch
+        {
+            return found;
+        }
+        return found;
+    }
+
+    public async Task<List<PrinterFile>?> QueryPrinterFilesAsync(CancellationToken ct)
+    {
+        if (_filesCache is not null && DateTime.UtcNow - _filesCacheAt < TimeSpan.FromMinutes(5))
+            return _filesCache;
+        try
+        {
+            var req = new HttpRequestMessage(HttpMethod.Get, Base + "/server/files/list?root=gcodes");
+            if (!await AddAuthAsync(req, ct))
+                return _filesCache;
+            using var res = await _http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+                return _filesCache;
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+            if (!doc.RootElement.TryGetProperty("result", out var result) ||
+                result.ValueKind != JsonValueKind.Array)
+                return _filesCache;
+            var files = new List<PrinterFile>();
+            foreach (var f in result.EnumerateArray())
+            {
+                string name = "";
+                if (f.TryGetProperty("path", out var path) && path.ValueKind == JsonValueKind.String)
+                    name = path.GetString() ?? "";
+                else if (f.TryGetProperty("filename", out var fn) && fn.ValueKind == JsonValueKind.String)
+                    name = fn.GetString() ?? "";
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
+                long? size = null, modified = null;
+                if (f.TryGetProperty("size", out var sz) && sz.ValueKind == JsonValueKind.Number && sz.TryGetInt64(out var sv))
+                    size = sv;
+                if (f.TryGetProperty("modified", out var mod) && mod.ValueKind == JsonValueKind.Number && mod.TryGetDouble(out var mv))
+                    modified = (long)mv;
+                files.Add(new PrinterFile { Filename = name, Size = size, Modified = modified });
+            }
+            files.Sort((a, b) => (b.Modified ?? 0).CompareTo(a.Modified ?? 0));
+            if (files.Count > 50)
+                files = files.GetRange(0, 50);
+            _filesCache = files;
+            _filesCacheAt = DateTime.UtcNow;
+            return _filesCache;
+        }
+        catch
+        {
+            return _filesCache;
+        }
+    }
+
+    public async Task<List<JobHistoryEntry>?> QueryJobHistoryAsync(CancellationToken ct)
+    {
+        if (_historyCache is not null && DateTime.UtcNow - _historyCacheAt < TimeSpan.FromMinutes(5))
+            return _historyCache;
+        try
+        {
+            var req = new HttpRequestMessage(HttpMethod.Get, Base + "/server/history/list?limit=20");
+            if (!await AddAuthAsync(req, ct))
+                return _historyCache;
+            using var res = await _http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+                return _historyCache;
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+            if (!doc.RootElement.TryGetProperty("result", out var result) ||
+                !result.TryGetProperty("jobs", out var jobs) ||
+                jobs.ValueKind != JsonValueKind.Array)
+                return _historyCache;
+            var entries = new List<JobHistoryEntry>();
+            foreach (var j in jobs.EnumerateArray())
+            {
+                string name = "";
+                if (j.TryGetProperty("filename", out var fn) && fn.ValueKind == JsonValueKind.String)
+                    name = fn.GetString() ?? "";
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
+                string status = "";
+                if (j.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.String)
+                    status = st.GetString() ?? "";
+                long? duration = null, started = null;
+                if (j.TryGetProperty("print_duration", out var pd) && pd.ValueKind == JsonValueKind.Number && pd.TryGetDouble(out var pdv))
+                    duration = (long)pdv;
+                if (j.TryGetProperty("start_time", out var stt) && stt.ValueKind == JsonValueKind.Number && stt.TryGetDouble(out var stv))
+                    started = (long)stv;
+                entries.Add(new JobHistoryEntry { Filename = name, Status = status, Duration = duration, Started = started });
+            }
+            if (entries.Count > 20)
+                entries = entries.GetRange(0, 20);
+            _historyCache = entries;
+            _historyCacheAt = DateTime.UtcNow;
+            return _historyCache;
+        }
+        catch
+        {
+            return _historyCache;
         }
     }
 
@@ -244,7 +517,13 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
             var req = new HttpRequestMessage(HttpMethod.Post, Base + "/server/files/upload") { Content = form };
             if (!await AddAuthAsync(req, ct))
                 return (false, $"Paxx login failed for '{Name}': check the Paxx username/password in Configure.");
-            using var res = await _http.SendAsync(req, ct);
+            // Upload timeout scales with file size (Oct 30, 2026:
+            // the shared 15s client timed out uploading the 41MB
+            // collar G-code, failing the first live print). Floor
+            // 180s, +5s per MB, cap 600s; status polls keep 15s.
+            var uploadSeconds = Math.Min(600.0, Math.Max(180.0, 60.0 + bytes.Length / 1024.0 / 1024.0 * 5.0));
+            using var uploadHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(uploadSeconds) };
+            using var res = await uploadHttp.SendAsync(req, ct);
             if (!res.IsSuccessStatusCode)
                 return (false, $"Moonraker upload to '{Name}' answered {(int)res.StatusCode}: {Trim(await res.Content.ReadAsStringAsync(ct))}");
             return (true, "");
@@ -310,6 +589,146 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
             return (false, $"Light command to '{Name}' failed: {ex.Message}");
         }
     }
+
+    /// <summary>AUTO-START BUILD — pause / cancel / home,
+    /// all via documented Moonraker endpoints (Moonraker
+    /// docs: POST /printer/print/pause, /printer/print/
+    /// cancel; home via the same /printer/gcode/script
+    /// endpoint the verified SET_LED call already uses,
+    /// with script "G28"). Home is executed ONLY behind
+    /// the bridge's home_power_allowed gate in FarmPoller
+    /// (owner A7 decision) — calling HomeAsync directly
+    /// bypasses that gate, so only FarmPoller may call it.
+    /// A failure never claims the printer changed state.</summary>
+    public async Task<(bool Ok, string Reason)> PausePrintAsync(CancellationToken ct)
+        => await PostMoonrakerAsync("/printer/print/pause", null, ct);
+
+    public async Task<(bool Ok, string Reason)> CancelPrintAsync(CancellationToken ct)
+        => await PostMoonrakerAsync("/printer/print/cancel", null, ct);
+
+    public async Task<(bool Ok, string Reason)> HomeAsync(CancellationToken ct)
+        => await PostMoonrakerAsync("/printer/gcode/script",
+            JsonSerializer.Serialize(new { script = "G28" }), ct);
+
+    private async Task<(bool Ok, string Reason)> PostMoonrakerAsync(string path, string? jsonBody, CancellationToken ct)
+    {
+        try
+        {
+            var req = new HttpRequestMessage(HttpMethod.Post, Base + path);
+            if (jsonBody is not null)
+                req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+            if (!await AddAuthAsync(req, ct))
+                return (false, $"Paxx login failed for '{Name}': check the Paxx username/password in Configure.");
+            using var res = await _http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+                return (false, $"Moonraker {path} on '{Name}' answered {(int)res.StatusCode}: {Trim(await res.Content.ReadAsStringAsync(ct))}");
+            return (true, "");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"Moonraker {path} on '{Name}' failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>AUTO-START BUILD — identify a Moonraker
+    /// candidate by hostname (GET /printer/info, Moonraker
+    /// docs: result.hostname). Tries unauthenticated first
+    /// (the U1 answered /printer/info that way on Oct 29,
+    /// 2026), then with the known printer's Paxx login or
+    /// API key. Returns the hostname, or null when the
+    /// candidate is not a Moonraker host or cannot be
+    /// identified. Used ONLY by IP-change auto-detection:
+    /// a hostname match against the learned hostname is
+    /// what proves a candidate IS the moved printer.</summary>
+    public static async Task<string?> TryGetMoonrakerHostnameAsync(
+        string ip, string? paxxUser, string? paxxPassword, string? accessCode, CancellationToken ct)
+    {
+        var url = $"http://{ip}:7125/printer/info";
+        string? TryHostname(string body)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
+                JsonElement result = default;
+                if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("result", out var r))
+                    result = r;
+                else
+                    result = root;
+                if (result.ValueKind == JsonValueKind.Object &&
+                    result.TryGetProperty("hostname", out var h) && h.ValueKind == JsonValueKind.String)
+                {
+                    var v = h.GetString();
+                    return string.IsNullOrWhiteSpace(v) ? null : v;
+                }
+                return null;
+            }
+            catch { return null; }
+        }
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            using var res = await http.GetAsync(url, ct);
+            if (res.IsSuccessStatusCode)
+            {
+                var host = TryHostname(await res.Content.ReadAsStringAsync(ct));
+                if (host is not null) return host;
+            }
+            // Authenticated retry with the known printer's
+            // credentials (Paxx login first, then API key).
+            if (!string.IsNullOrWhiteSpace(paxxUser) && !string.IsNullOrWhiteSpace(paxxPassword))
+            {
+                try
+                {
+                    var loginBody = JsonSerializer.Serialize(new { username = paxxUser, password = paxxPassword });
+                    using var login = new HttpRequestMessage(HttpMethod.Post, $"http://{ip}:7125/access/login")
+                    {
+                        Content = new StringContent(loginBody, Encoding.UTF8, "application/json"),
+                    };
+                    using var loginRes = await http.SendAsync(login, ct);
+                    if (loginRes.IsSuccessStatusCode)
+                    {
+                        using var doc = JsonDocument.Parse(await loginRes.Content.ReadAsStringAsync(ct));
+                        string? token = null;
+                        if (doc.RootElement.TryGetProperty("result", out var r) && r.TryGetProperty("token", out var tk))
+                            token = tk.GetString();
+                        else if (doc.RootElement.TryGetProperty("token", out var tk2))
+                            token = tk2.GetString();
+                        if (!string.IsNullOrWhiteSpace(token))
+                        {
+                            using var authed = new HttpRequestMessage(HttpMethod.Get, url);
+                            authed.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                            using var authedRes = await http.SendAsync(authed, ct);
+                            if (authedRes.IsSuccessStatusCode)
+                                return TryHostname(await authedRes.Content.ReadAsStringAsync(ct));
+                        }
+                    }
+                }
+                catch { /* fall through to API-key attempt */ }
+            }
+            if (!string.IsNullOrWhiteSpace(accessCode))
+            {
+                try
+                {
+                    using var keyed = new HttpRequestMessage(HttpMethod.Get, url);
+                    keyed.Headers.Add("X-Api-Key", accessCode);
+                    using var keyedRes = await http.SendAsync(keyed, ct);
+                    if (keyedRes.IsSuccessStatusCode)
+                        return TryHostname(await keyedRes.Content.ReadAsStringAsync(ct));
+                }
+                catch { /* no identification */ }
+            }
+            return null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Instance wrapper: this printer's own
+    /// Moonraker hostname, for learning (see
+    /// IpReconciler). Null when the printer cannot be
+    /// reached or does not answer /printer/info.</summary>
+    public Task<string?> TryGetHostnameAsync(CancellationToken ct)
+        => TryGetMoonrakerHostnameAsync(_cfg.Ip, _cfg.PaxxUser, _cfg.PaxxPassword, _cfg.AccessCode, ct);
 
     /// <summary>0.9.6 Snapmaker camera URL preference, in
     /// order: (1) a Moonraker webcam snapshot URL verified
@@ -637,6 +1056,7 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
         Name = Name,
         Type = Type,
         Ip = Ip,
+        Serial = SerialKey,
         State = "offline",
         Detail = detail,
         Ams = new AmsState { Known = false, Detail = "Printer unreachable; AMS unknown." },

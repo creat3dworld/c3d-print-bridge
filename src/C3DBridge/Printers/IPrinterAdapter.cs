@@ -22,6 +22,13 @@ public interface IPrinterAdapter
     string Type { get; }
     string Ip { get; }
 
+    /// <summary>Stable identity key sent to the dashboard on every
+    /// status report (2026.1030.1511-farm-dedupe). Bambu: the factory
+    /// serial. Snapmaker: the learned Moonraker hostname when known,
+    /// else the configured serial. Generic: the configured serial.
+    /// Empty when unknown — never a guessed value.</summary>
+    string SerialKey { get; }
+
     /// <summary>Current live state. Never throws: on any failure it
     /// returns state "offline" with the reason in Detail.</summary>
     Task<PrinterStatus> GetStatusAsync(CancellationToken ct);

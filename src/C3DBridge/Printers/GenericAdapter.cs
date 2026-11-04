@@ -16,8 +16,10 @@ public sealed class GenericAdapter : IPrinterAdapter
     public string Name { get; }
     public string Type { get; }
     public string Ip { get; }
+    // 2026.1030.1511-farm-dedupe: generic identity is the configured serial.
+    public string SerialKey => _cfg.Serial ?? "";
     public Task<PrinterStatus> GetStatusAsync(CancellationToken ct)
-        => Task.FromResult(new PrinterStatus { Name = Name, Type = Type, Ip = Ip, State = "offline", Detail = $"Generic brand '{_cfg.Type}' — no live adapter yet, config saved." });
+        => Task.FromResult(new PrinterStatus { Name = Name, Type = Type, Ip = Ip, Serial = SerialKey, State = "offline", Detail = $"Generic brand '{_cfg.Type}' — no live adapter yet, config saved." });
     public Task<(bool Ok, string Reason)> UploadFileAsync(string localPath, string fileName, CancellationToken ct)
         => Task.FromResult((false, $"Generic brand '{_cfg.Type}' — upload not supported yet."));
     public Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct)

@@ -1,10 +1,21 @@
 // C3D Print Bridge — worker loop (the thin relay itself).
 //
-// Every tick the bridge does exactly three things, all outbound:
+// Every tick the bridge does, all outbound:
 //   1. Ask each configured printer for its live state.
 //   2. Push that state (and the queue length) to the dashboard.
 //   3. Ask the dashboard for jobs it assigned to this bridge, and
 //      carry out the ones the dashboard marked "ready".
+//   4. On the job-poll tick, also poll slice jobs
+//      (dashboard-requested slicing, run locally) and
+//      reconcile offline printers against LAN candidates
+//      for IP-change detection. Farm jobs are NOT on
+//      this tick: SPEED FIX (2026.1103) polls them on
+//      EVERY loop tick (~5 s), so a Send/Start dispatch
+//      is picked up within ~one tick instead of up to a
+//      full job-poll interval later; while a farm start
+//      is unconfirmed, the status poll is likewise
+//      forced every tick until the printer shows
+//      printing, then normal cadence resumes.
 //
 // What it NEVER does (thin-relay scope, owner-confirmed):
 // - It never picks a printer for a job: the dashboard assigns by
@@ -12,8 +23,10 @@
 // - It never orders, prioritizes, or reschedules jobs: per printer
 //   it runs at most one job, in dashboard poll order, because a
 //   printer can physically print only one thing at a time.
-// - It never slices, modifies, or inspects model geometry: the
-//   file the dashboard provides is forwarded byte-for-byte.
+// - It never inspects or modifies model geometry: a slice job
+//   hands a file to the slicer CLI and forwards the verified
+//   G-code byte-for-byte; a print job forwards the dashboard's
+//   file byte-for-byte.
 // - It keeps no database: state is in-memory only, plus a plain
 //   log file. A restart forgets in-flight jobs (the printer keeps
 //   printing; the dashboard still shows the job until it is
@@ -44,6 +57,8 @@ public sealed class Worker
     private readonly PrinterRegistry _printers;
     private readonly DashboardClient _dashboard;
     private readonly FarmPoller _farmPoller;
+    private readonly IpReconciler _ipReconciler;
+    private readonly SlicePoller _slicePoller;
     private readonly OcrPoller _ocrPoller;
     private readonly Dictionary<string, ActiveJob> _active = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _terminalReported = new(StringComparer.OrdinalIgnoreCase);
@@ -67,7 +82,16 @@ public sealed class Worker
         _cfg = cfg;
         _printers = printers;
         _dashboard = dashboard;
-        _farmPoller = new FarmPoller(dashboard, printers);
+        // AUTO-START BUILD: FarmPoller is now the single
+        // starter for farm jobs (the bridge/jobs mirror stays
+        // forced 'held' and emits no 'ready' — see
+        // ExecuteReadyJobsAsync, which is deliberately NOT
+        // the farm path). IpReconciler and SlicePoller are
+        // the IP-change detection and in-dashboard slicing
+        // stages from the same build.
+        _farmPoller = new FarmPoller(dashboard, printers, cfg);
+        _ipReconciler = new IpReconciler(dashboard, printers);
+        _slicePoller = new SlicePoller(dashboard, cfg);
         _ocrPoller = new OcrPoller(dashboard);
     }
 
@@ -99,6 +123,23 @@ public sealed class Worker
             {
                 var now = DateTime.UtcNow;
 
+                // SPEED FIX (2026.1103): while a farm job
+                // this bridge started has not yet been seen
+                // printing, force a fresh status poll on
+                // this iteration instead of waiting for the
+                // next status-interval tick, so the
+                // dashboard learns "printing" within ~one
+                // loop tick of the printer actually
+                // starting. Once printing is confirmed (or
+                // the job ends), HasUnconfirmedStart goes
+                // false and normal cadence resumes on its
+                // own; the monitor's 2-minute no-start
+                // failure still bounds it, so a printer
+                // that never starts cannot hold fast
+                // polling open.
+                if (_farmPoller.HasUnconfirmedStart())
+                    lastStatus = DateTime.MinValue;
+
                 // 1. Live printer state (each printer isolated: one
                 //    printer's failure never stops the others).
                 Dictionary<string, PrinterStatus> statuses = new(StringComparer.OrdinalIgnoreCase);
@@ -108,7 +149,7 @@ public sealed class Worker
                     var tasks = _printers.All.Select(async a =>
                     {
                         try { return await a.GetStatusAsync(ct); }
-                        catch (Exception ex) { return new PrinterStatus { Name = a.Name, Type = a.Type, Ip = a.Ip, State = "offline", Detail = ex.Message }; }
+                        catch (Exception ex) { return new PrinterStatus { Name = a.Name, Type = a.Type, Ip = a.Ip, Serial = a.SerialKey, State = "offline", Detail = ex.Message }; }
                     });
                     foreach (var st in await Task.WhenAll(tasks))
                         statuses[st.Name] = st;
@@ -117,11 +158,84 @@ public sealed class Worker
                         string.Equals(j.SafetyVerdict, "ready", StringComparison.OrdinalIgnoreCase) &&
                         !_active.ContainsKey(j.PrinterName) &&
                         !_terminalReported.Contains(j.JobKey)) + _active.Count;
+                    // AUTO-START BUILD: overlay the bridge-known
+                    // light state (recorded when a lights control
+                    // executes) onto the status push, so the Farm
+                    // card's Light field reflects a proven
+                    // execution instead of staying "Not reported".
+                    // A printer with no executed lights control
+                    // keeps whatever its adapter reported.
+                    foreach (var name in statuses.Keys.ToList())
+                    {
+                        var light = _farmPoller.LightStateFor(name);
+                        if (!string.IsNullOrWhiteSpace(light))
+                            statuses[name] = statuses[name] with { LightState = light };
+                    }
+                    // BRIDGE-READS BUILD: overlay the last
+                    // G-code parse per printer (same pattern as
+                    // the light overlay) and the Snapmaker
+                    // nozzle diameters (10-minute cached inside
+                    // the adapter) onto the status push, so the
+                    // dashboard card can show them with no
+                    // endpoint change: PushStatusAsync already
+                    // serializes the whole printer list.
+                    // A printer with no parse yet keeps "" /
+                    // null (unknown); a printer with no nozzle
+                    // data keeps an empty map (unknown).
+                    foreach (var name in statuses.Keys.ToList())
+                    {
+                        var parse = _farmPoller.ParseFor(name);
+                        if (parse is not null && parse.ParseOk)
+                        {
+                            statuses[name] = statuses[name] with
+                            {
+                                DeclaredFileTool = parse.FirstTool,
+                                DeclaredToolSequence = string.Join(",", parse.ToolsInOrder),
+                                FileProfile = parse.Profile,
+                                FileNozzleMm = parse.SlicedNozzleMm,
+                            };
+                        }
+                    }
+                    foreach (var adapter in _printers.All)
+                    {
+                        if (adapter is C3DBridge.Printers.SnapmakerAdapter snap &&
+                            statuses.TryGetValue(adapter.Name, out var st))
+                        {
+                            var diameters = await snap.QueryNozzleDiametersAsync(ct);
+                            if (diameters.Count > 0)
+                                statuses[adapter.Name] = st with { NozzleDiameters = diameters };
+                        }
+                    }
+                    // FLUIDD SLICE 1: overlay Moonraker thermals
+                    // (every status tick), printer files + job
+                    // history (5-minute cached inside the
+                    // adapter) onto the status push, same
+                    // pattern as the nozzle overlay. A failed
+                    // fetch keeps the last good files/history
+                    // (or null = never fetched) and an empty
+                    // thermals list; the dashboard renders
+                    // those as Not reported / Not available,
+                    // never a guessed value.
+                    foreach (var adapter in _printers.All)
+                    {
+                        if (adapter is C3DBridge.Printers.SnapmakerAdapter snap &&
+                            statuses.TryGetValue(adapter.Name, out var st))
+                        {
+                            var thermals = await snap.QueryThermalsAsync(ct);
+                            var files = await snap.QueryPrinterFilesAsync(ct);
+                            var history = await snap.QueryJobHistoryAsync(ct);
+                            statuses[adapter.Name] = st with { Thermals = thermals, PrinterFiles = files, JobHistory = history };
+                        }
+                    }
                     if (_dashboard.HasKey)
                         await _dashboard.PushStatusAsync(statuses.Values.ToList(), queueLength, ct);
                     else
                         foreach (var st in statuses.Values)
                             Program.Log($"[local] {st.Name}: {st.State} {st.Detail}");
+                    // AUTO-START BUILD: learn Moonraker
+                    // hostnames for IP-change matching (local
+                    // config only; once per run per printer).
+                    await _ipReconciler.LearnHostnamesAsync(statuses, ct);
                 }
                 else
                 {
@@ -156,12 +270,33 @@ public sealed class Worker
                             Program.Log("Dashboard job poll recovered.");
                         }
                         await ExecuteReadyJobsAsync(statuses, ct);
-                        // Farm build, first stage: poll farm/jobs
-                        // too. FarmPoller never starts a print
-                        // without a verified file (farm jobs carry
-                        // none yet), so this only logs dispatches
-                        // and leaves missing-file jobs queued.
-                        await _farmPoller.PollAsync(statuses, ct);
+                        // AUTO-START BUILD: FarmPoller is still
+                        // the SINGLE starter for farm jobs
+                        // (same gates as before: dispatch=
+                        // 'start' AND queued or pending_bridge_
+                        // confirmation AND live idle AND bed +
+                        // AMS confirmed AND verified sliced
+                        // file for that printer model), but it
+                        // no longer runs here: SPEED FIX
+                        // (2026.1103) runs it on EVERY loop
+                        // tick below, so a dispatch is picked
+                        // up within ~one tick. The bridge/jobs
+                        // mirror stays forced 'held' and
+                        // nothing here emits 'ready' for a
+                        // farm job, so a farm job can never
+                        // be started twice by two paths.
+                        // AUTO-START BUILD: IP-change
+                        // reconciliation (throttled inside) and
+                        // pending move-report retries, on the
+                        // same job-poll tick.
+                        await _ipReconciler.ReconcileAsync(statuses, ct);
+                        await _ipReconciler.FlushMoveReportsAsync(ct);
+                        // AUTO-START BUILD: in-dashboard slicing
+                        // (dashboard Slice action → bridge slicer
+                        // CLI → verified G-code back). One slice
+                        // at a time, in the background; it never
+                        // blocks status polls or heartbeats.
+                        await _slicePoller.PollAsync(ct);
                         // Bridge OCR stage: poll bridge/ocr-jobs
                         // too, on the same job-poll tick as the
                         // farm poller. OcrPoller never starts a
@@ -181,7 +316,34 @@ public sealed class Worker
                     Program.Log("WARNING: dashboard rejected the bridge API key (revoked or rotated). Job polling paused. Re-copy the key from the dashboard settings and run setup again (see SETUP.md).");
                 }
 
+                // SPEED FIX (2026.1103): farm jobs poll on
+                // EVERY loop tick (~5 s + work time), not
+                // only on the job-poll tick (default 30 s):
+                // a Send/Start dispatch is picked up within
+                // ~one tick instead of up to a full job-poll
+                // interval later. Every start gate inside
+                // FarmPoller is unchanged; only the cadence
+                // moved. Farm controls ride in the same
+                // PollAsync call, so a lights/home/power
+                // intent is likewise picked up within ~one
+                // tick. The rejected-key guard matches the
+                // job-poll gate: with a rejected key, farm
+                // polling stays paused (and the 10-minute
+                // warning above still fires). This also
+                // decouples farm starts from the bridge/jobs
+                // mirror poll: a mirror failure no longer
+                // blocks a farm start, since farm/jobs has
+                // its own failure handling inside PollAsync.
+                if (_dashboard.HasKey && !_dashboard.KeyRejected)
+                    await _farmPoller.PollAsync(statuses, ct);
+
                 await MonitorActiveJobsAsync(statuses, ct);
+                // Snapshot-route latch expires after 10 minutes
+                // (Oct 30, 2026: a deploy window's 404 latched it
+                // forever until a bridge restart). After cooldown,
+                // retry once; a fresh 404 re-latches from now.
+                if (_bedSnapshotEndpointMissing && DateTime.UtcNow - _bedSnapshotEndpointMissingSince >= TimeSpan.FromMinutes(10))
+                    _bedSnapshotEndpointMissing = false;
                 if (_dashboard.HasKey && !_dashboard.KeyRejected && !_bedSnapshotEndpointMissing)
                     await CaptureBedSnapshotsAsync(statuses, ct);
                 _lastStatuses = statuses;
@@ -210,6 +372,7 @@ public sealed class Worker
     private readonly Dictionary<string, DateTime> _lastBedSnapshotAttempt = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _cameraRefreshServed = new(StringComparer.OrdinalIgnoreCase);
     private bool _bedSnapshotEndpointMissing;
+    private DateTime _bedSnapshotEndpointMissingSince = DateTime.MinValue;
 
     private bool ShouldLogProblem(string problem)
     {
@@ -550,7 +713,8 @@ public sealed class Worker
             if (!ok && status == System.Net.HttpStatusCode.NotFound)
             {
                 _bedSnapshotEndpointMissing = true;
-                Program.Log("Bed View: dashboard bed-snapshot route not installed yet (needs dashboard 0.8.3). Snapshots paused until the dashboard is updated.");
+                _bedSnapshotEndpointMissingSince = DateTime.UtcNow;
+                Program.Log("Bed View: dashboard bed-snapshot route missing (usually a deploy window). Snapshots paused; retry in 10 minutes.");
             }
         }
     }

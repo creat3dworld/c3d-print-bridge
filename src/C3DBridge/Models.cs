@@ -23,6 +23,18 @@ public sealed record PrinterConfig
     /// <summary>MAC address, when known, used to follow a DHCP printer
     /// to a new IP. Never a substitute for serial/access code.</summary>
     [JsonPropertyName("mac")] public string? Mac { get; init; }
+    /// <summary>AUTO-START BUILD — Moonraker hostname learned
+    /// from the printer itself (GET /printer/info) and saved
+    /// to the LOCAL config only, so IP-change auto-detection
+    /// can recognize this printer at a new address. Learned,
+    /// never typed by hand; empty until the bridge has seen
+    /// the printer answer /printer/info. 2026.1030.1511-farm-dedupe:
+    /// Moonraker exposes no factory serial, so this hostname
+    /// IS now the printer's dashboard identity key — sent as
+    /// the serial on status reports and move reports
+    /// (SnapmakerAdapter.SerialKey). It is sent ONLY in that
+    /// identity role, never as a separate hostname claim.</summary>
+    [JsonPropertyName("moonraker_hostname")] public string? MoonrakerHostname { get; init; }
     /// <summary>Still-image URL for Bed View. Owner-set from the
     /// printer's own docs (for example a Paxx webcam still
     /// endpoint), or auto-discovered by the bridge (2275) from
@@ -69,7 +81,13 @@ public sealed record PrinterConfig
     /// Action1 — no endpoint is claimed verified here.</summary>
     [JsonPropertyName("snapmaker_snapshot_url")] public string? SnapmakerSnapshotUrl { get; init; }
     [JsonPropertyName("snapmaker_stream_url")] public string? SnapmakerStreamUrl { get; init; }
-    /// <summary>Bambu only: printer serial number (for MQTT topics).</summary>
+    /// <summary>Bambu only: printer serial number (for MQTT topics).
+    /// This is also the dashboard identity key for Bambu printers:
+    /// status reports carry it so the dashboard updates the
+    /// existing card in place on an IP move (2026.1030.1511-farm-dedupe).
+    /// Snapmaker printers use the learned Moonraker hostname as
+    /// their runtime identity instead (SnapmakerAdapter.SerialKey),
+    /// because Moonraker exposes no factory serial.</summary>
     [JsonPropertyName("serial")] public string? Serial { get; init; }
     /// <summary>Bambu only: LAN access code from the printer's screen.
     /// Snapmaker only: Moonraker/API key if the printer requires one.
@@ -116,6 +134,38 @@ public sealed record BridgeConfig
     /// found. Stored in bridge-config.json, preserved by the
     /// installer like every other local setting.</summary>
     [JsonPropertyName("auto_update")] public bool AutoUpdate { get; init; }
+    /// <summary>AUTO-START BUILD — Home/Power safety gate (A7).
+    /// Default FALSE: Home and Power control intents are
+    /// reported as gated, never executed, until the owner
+    /// decides when (if ever) the bridge may home or power
+    /// a printer. Setting this true WITHOUT that decision is
+    /// a misconfiguration, not an approval: the flag only
+    /// takes effect after the owner states the A7 decision.
+    /// Power has no verified execution path on any brand
+    /// even when this is true (it needs a smart-plug
+    /// decision), so power stays reported-unsupported.</summary>
+    [JsonPropertyName("home_power_allowed")] public bool HomePowerAllowed { get; init; }
+    /// <summary>AUTO-START BUILD — slicer executables for
+    /// in-dashboard slicing. Full paths to the slicer CLIs
+    /// on this PC, or empty = not configured (slice jobs
+    /// then fail honestly instead of running a guessed
+    /// binary). Discovered by the slice pilot script, never
+    /// guessed here.</summary>
+    [JsonPropertyName("slicer_orcaslicer_path")] public string? SlicerOrcaslicerPath { get; init; }
+    [JsonPropertyName("slicer_snapmaker_orca_path")] public string? SlicerSnapmakerOrcaPath { get; init; }
+    [JsonPropertyName("slicer_bambu_studio_path")] public string? SlicerBambuStudioPath { get; init; }
+    /// <summary>AUTO-START BUILD — folder holding the full
+    /// exported slicer preset JSONs (printer, process,
+    /// filament) referenced by slice jobs. Presets must be
+    /// full exports: the slicer CLI does not resolve
+    /// inherits/include, and an unresolved preset slices
+    /// "successfully" onto a generic bed with no printer
+    /// start G-code.</summary>
+    [JsonPropertyName("slicer_presets_dir")] public string? SlicerPresetsDir { get; init; }
+    /// <summary>AUTO-START BUILD — minutes a slice run may
+    /// take before the bridge kills it and reports failure.
+    /// Default 15.</summary>
+    [JsonPropertyName("slice_timeout_minutes")] public int SliceTimeoutMinutes { get; init; } = 15;
     /// <summary>Non-3D printer queues the owner picked by Windows
     /// queue name (Oct 24, 2026). These are NOT 3D printers and
     /// are never in PrinterRegistry: no 3D job, farm job, or
@@ -167,10 +217,13 @@ public sealed record DashboardJob
 }
 
 /// <summary>A Print Farm job from GET farm/jobs, plus its
-/// dispatch command. Farm jobs carry NO file yet — see
-/// FarmPoller: the bridge never guesses one, so a dispatched
-/// farm job is logged and left queued until the dashboard
-/// file-delivery route lands.</summary>
+/// dispatch command. AUTO-START BUILD (2026.1029 farm-auto):
+/// farm jobs now carry their file-delivery fields (the
+/// dashboard has served them since the farm build), so the
+/// FarmPoller execution stage can download, upload, and
+/// start them. A job with FileMissing, FileNeedsSlicing, or
+/// a non-sliced FileKind is never started — it is held and
+/// logged, never guessed into a print.</summary>
 public sealed record FarmJob
 {
     [JsonPropertyName("job_id")] public string JobId { get; init; } = "";
@@ -186,6 +239,64 @@ public sealed record FarmJob
     [JsonPropertyName("bed_confirmed")] public bool BedConfirmed { get; init; }
     [JsonPropertyName("ams_confirmed")] public bool AmsConfirmed { get; init; }
     [JsonPropertyName("dispatch")] public string Dispatch { get; init; } = "";
+    /// <summary>Authenticated dashboard file route for this
+    /// job (GET farm/file?job_id=...). Empty when the file
+    /// is missing — never a broken or public URL.</summary>
+    [JsonPropertyName("file_url")] public string FileUrl { get; init; } = "";
+    [JsonPropertyName("file_name")] public string FileName { get; init; } = "";
+    [JsonPropertyName("file_sha256")] public string FileSha256 { get; init; } = "";
+    /// <summary>"sliced" for a verified G-code file, anything
+    /// else (including "unsliced") means do not start.</summary>
+    [JsonPropertyName("file_kind")] public string FileKind { get; init; } = "";
+    [JsonPropertyName("file_missing")] public bool FileMissing { get; init; }
+    [JsonPropertyName("file_needs_slicing")] public bool FileNeedsSlicing { get; init; }
+    [JsonPropertyName("plate")] public string Plate { get; init; } = "";
+    /// <summary>Dashboard job's AMS/slot label as entered by the
+    /// operator (free text, e.g. "1" or "AMS A2"). The bridge
+    /// maps it to a tool index only via
+    /// GcodeFileParser.SlotToToolIndex; unmappable values
+    /// stay unknown, never guessed.</summary>
+    [JsonPropertyName("ams_slot")] public string AmsSlot { get; init; } = "";
+    [JsonPropertyName("library_file_id")] public string LibraryFileId { get; init; } = "";
+    /// <summary>Printer model the sliced file was recorded
+    /// for ("" = not recorded, never guessed). A known
+    /// mismatch against the target printer holds the job.</summary>
+    [JsonPropertyName("sliced_for")] public string SlicedFor { get; init; } = "";
+}
+
+/// <summary>One in-dashboard slice request from GET
+/// farm/slice-jobs (AUTO-START BUILD). The dashboard
+/// records these when the Slice action is used on a File
+/// Library entry; the bridge downloads the library file,
+/// runs the slicer CLI on the shop PC, verifies the
+/// G-code, and reports it back. The bridge never slices
+/// on the web server and never invents settings: preset
+/// files come from the bridge's local slicer presets
+/// folder, named in the job. Slicer values: "orcaslicer",
+/// "snapmaker-orca", "bambu-studio".</summary>
+public sealed record SliceJob
+{
+    [JsonPropertyName("slice_job_id")] public string SliceJobId { get; init; } = "";
+    [JsonPropertyName("library_file_id")] public string LibraryFileId { get; init; } = "";
+    /// <summary>Authenticated dashboard route serving the
+    /// library file bytes for this slice job.</summary>
+    [JsonPropertyName("input_url")] public string InputUrl { get; init; } = "";
+    [JsonPropertyName("input_sha256")] public string InputSha256 { get; init; } = "";
+    [JsonPropertyName("slicer")] public string Slicer { get; init; } = "";
+    /// <summary>Printer model the slice is for; becomes the
+    /// library entry's "Sliced for" value on success.</summary>
+    [JsonPropertyName("target_model")] public string TargetModel { get; init; } = "";
+    /// <summary>Plate number to slice (1-based; 0 = all
+    /// plates, in which case plate_1.gcode is reported).</summary>
+    [JsonPropertyName("plate")] public int Plate { get; init; } = 1;
+    /// <summary>Preset JSON file names under the bridge's
+    /// slicer presets folder (full exported presets, never
+    /// fragments — the slicer CLI does not resolve
+    /// inherits/include, and an unresolved preset slices
+    /// "successfully" onto a generic bed).</summary>
+    [JsonPropertyName("preset_printer")] public string PresetPrinter { get; init; } = "";
+    [JsonPropertyName("preset_process")] public string PresetProcess { get; init; } = "";
+    [JsonPropertyName("preset_filament")] public string PresetFilament { get; init; } = "";
 }
 
 /// <summary>One queued Facebook label-PDF OCR job from GET
@@ -202,6 +313,22 @@ public sealed record OcrJob
     [JsonPropertyName("file_name")] public string FileName { get; init; } = "";
 }
 
+/// <summary>One pending farm control intent from GET
+/// farm/controls (DRAFT 2026-10-29). The dashboard records
+/// these when the Lights / Home / Power buttons are clicked;
+/// the bridge executes what it safely can and reports back.
+/// Command is "home", "lights", or "power" (dashboard-side
+/// validation); anything else is reported as unsupported,
+/// never executed.</summary>
+public sealed record FarmControl
+{
+    [JsonPropertyName("printer_ip")] public string PrinterIp { get; init; } = "";
+    [JsonPropertyName("printer_name")] public string PrinterName { get; init; } = "";
+    [JsonPropertyName("command")] public string Command { get; init; } = "";
+    [JsonPropertyName("set_at")] public string SetAt { get; init; } = "";
+    [JsonPropertyName("set_unix")] public long SetUnix { get; init; }
+}
+
 public sealed record DashboardJobItem
 {
     [JsonPropertyName("name")] public string Name { get; init; } = "";
@@ -210,7 +337,15 @@ public sealed record DashboardJobItem
 
 /// <summary>Live printer state, reported exactly as observed.
 /// "offline" means the bridge could not reach the printer at all.
-/// Nothing here is ever guessed.</summary>
+/// Nothing here is ever guessed.
+/// AUTO-START BUILD additions: NativeState carries the
+/// printer's own raw state word verbatim (Bambu gcode_state,
+/// Moonraker print_stats.state) beside the mapped State, so
+/// a finish word (FINISH / complete) survives instead of
+/// being flattened into "idle". LightState carries the
+/// bridge-known chamber/cavity light state ("on" / "off" /
+/// "unknown") — set only from a light control this bridge
+/// actually executed, never guessed from a snapshot.</summary>
 public sealed record PrinterStatus
 {
     [JsonPropertyName("name")] public string Name { get; init; } = "";
@@ -220,25 +355,122 @@ public sealed record PrinterStatus
     // from their own config; empty stays empty (never guessed).
     [JsonPropertyName("type")] public string Type { get; init; } = "";
     [JsonPropertyName("ip")] public string Ip { get; init; } = "";
+    // 2026.1030.1511-farm-dedupe — the dashboard identity key,
+    // sent on every status report so the dashboard updates the
+    // existing card in place on an IP move instead of adding a
+    // second card. Bambu: the factory serial. Snapmaker: the
+    // learned Moonraker hostname (SnapmakerAdapter.SerialKey).
+    // Empty when unknown — never a guessed value.
+    [JsonPropertyName("serial")] public string Serial { get; init; } = "";
     [JsonPropertyName("state")] public string State { get; init; } = "offline";
     // idle | printing | paused | error | offline
+    [JsonPropertyName("native_state")] public string NativeState { get; init; } = "";
     [JsonPropertyName("progress_percent")] public double? ProgressPercent { get; init; }
     [JsonPropertyName("remaining_seconds")] public long? RemainingSeconds { get; init; }
     [JsonPropertyName("current_job_key")] public string? CurrentJobKey { get; init; }
     [JsonPropertyName("detail")] public string Detail { get; init; } = "";
     [JsonPropertyName("ams")] public AmsState Ams { get; init; } = new();
     [JsonPropertyName("camera_available")] public bool CameraAvailable { get; init; }
+    [JsonPropertyName("light_state")] public string LightState { get; init; } = "unknown";
+    /// <summary>BRIDGE-READS BUILD: per-toolhead nozzle diameters
+    /// in mm, keyed by tool index ("0" = first toolhead,
+    /// "1" = second, …), from the printer's own config
+    /// (Snapmaker Moonraker configfile query). Empty =
+    /// unknown, never invented. Older dashboards ignore
+    /// unknown JSON fields, so this is backward compatible.</summary>
+    [JsonPropertyName("nozzle_diameters")] public Dictionary<string, double> NozzleDiameters { get; init; } = new();
+    /// <summary>BRIDGE-READS BUILD: the file tool the bridge
+    /// last parsed for a job dispatched to this printer
+    /// (e.g. "T0"), from FarmPoller's streaming G-code parse.
+    /// "" = no file parsed yet (unknown). Last-parse
+    /// semantics: it describes the most recent parsed file
+    /// for this printer, not a live printer state.</summary>
+    [JsonPropertyName("declared_file_tool")] public string DeclaredFileTool { get; init; } = "";
+    /// <summary>BRIDGE-READS BUILD: full declared tool sequence
+    /// from that last parse, comma-joined (e.g. "T0,T0").</summary>
+    [JsonPropertyName("declared_tool_sequence")] public string DeclaredToolSequence { get; init; } = "";
+    /// <summary>BRIDGE-READS BUILD: slicer profile name from
+    /// that last parse (filament_settings_id), or "".</summary>
+    [JsonPropertyName("file_profile")] public string FileProfile { get; init; } = "";
+    /// <summary>BRIDGE-READS BUILD: nozzle size in mm derived
+    /// ONLY from the profile label ("<number> nozzle"), or
+    /// null when the label names none. Never measured,
+    /// never taken from extrusion widths.</summary>
+    [JsonPropertyName("file_nozzle_mm")] public double? FileNozzleMm { get; init; }
+    /// <summary>FLUIDD SLICE 1: live heater/sensor readings
+    /// from the printer's Moonraker objects query (U1 only;
+    /// Bambu adapters leave this empty). Empty = unknown,
+    /// never invented. Older dashboards ignore unknown
+    /// JSON fields, so this is backward compatible.</summary>
+    [JsonPropertyName("thermals")] public List<ThermalReading> Thermals { get; init; } = new();
+    /// <summary>FLUIDD SLICE 1: files on the printer, newest
+    /// first, from Moonraker server/files/list (U1 only).
+    /// Null = the bridge has not successfully fetched the
+    /// list (dashboard renders "Not available"); an empty
+    /// list = fetched, but no files. Never invented.</summary>
+    [JsonPropertyName("printer_files")] public List<PrinterFile>? PrinterFiles { get; init; }
+    /// <summary>FLUIDD SLICE 1: recent print jobs, newest
+    /// first, from Moonraker server/history/list (U1 only).
+    /// Null = not fetched (dashboard renders "Not
+    /// available"); empty = fetched, but no jobs.</summary>
+    [JsonPropertyName("job_history")] public List<JobHistoryEntry>? JobHistory { get; init; }
+}
+
+/// <summary>One heater or temperature sensor reading, as
+/// reported by Moonraker. Target is null for sensors
+/// (which have no target) and for any reading Moonraker
+/// reported without one.</summary>
+public sealed record ThermalReading
+{
+    [JsonPropertyName("name")] public string Name { get; init; } = "";
+    [JsonPropertyName("actual")] public double? Actual { get; init; }
+    [JsonPropertyName("target")] public double? Target { get; init; }
+}
+
+/// <summary>One file on the printer, from Moonraker
+/// server/files/list. Modified is unix seconds.</summary>
+public sealed record PrinterFile
+{
+    [JsonPropertyName("filename")] public string Filename { get; init; } = "";
+    [JsonPropertyName("size")] public long? Size { get; init; }
+    [JsonPropertyName("modified")] public long? Modified { get; init; }
+}
+
+/// <summary>One finished print job, from Moonraker
+/// server/history/list. Duration is seconds; started is
+/// unix seconds. Status is Moonraker's own word
+/// (completed / cancelled / error), verbatim.</summary>
+public sealed record JobHistoryEntry
+{
+    [JsonPropertyName("filename")] public string Filename { get; init; } = "";
+    [JsonPropertyName("status")] public string Status { get; init; } = "";
+    [JsonPropertyName("duration")] public long? Duration { get; init; }
+    [JsonPropertyName("started")] public long? Started { get; init; }
 }
 
 /// <summary>What the printer reports as loaded, if anything.
 /// Known=false means the printer did not report usable AMS data, so
-/// the dashboard must treat material/color as unverifiable.</summary>
+/// the dashboard must treat material/color as unverifiable.
+/// AUTO-START BUILD: Slots carries every populated tray the
+/// printer reported (Bambu AMS), so the dashboard can show
+/// per-slot material/color even when no single loaded
+/// filament can be picked (several trays populated).</summary>
 public sealed record AmsState
 {
     [JsonPropertyName("known")] public bool Known { get; init; }
     [JsonPropertyName("material")] public string Material { get; init; } = "";
     [JsonPropertyName("color")] public string Color { get; init; } = "";
     [JsonPropertyName("detail")] public string Detail { get; init; } = "";
+    [JsonPropertyName("slots")] public List<AmsSlot> Slots { get; init; } = new();
+}
+
+/// <summary>One populated AMS tray, as reported by the
+/// printer. Slot is the printer's own tray id.</summary>
+public sealed record AmsSlot
+{
+    [JsonPropertyName("slot")] public string Slot { get; init; } = "";
+    [JsonPropertyName("material")] public string Material { get; init; } = "";
+    [JsonPropertyName("color")] public string Color { get; init; } = "";
 }
 
 /// <summary>One bed-view snapshot, captured by the bridge on the

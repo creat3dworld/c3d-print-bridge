@@ -21,27 +21,34 @@
 //       reported as unknown rather than guessed.
 //
 // KNOWN LIMITS (honest, by design):
-// - FTPS data-channel TLS session reuse is a known Bambu quirk:
-//   some printers refuse a fresh data-channel session. Upload
-//   attempts report the printer's exact response; a refused upload
-//   fails the job with that reason and never pretends success.
+// - FTPS uploads go through curl.exe (session reuse + PBSZ/PROT),
+//   because Bambu printers on current firmware refuse the fresh
+//   data-channel TLS session the built-in SslStream uploader opens
+//   (proven live Nov 3, 2026: 90MB via curl succeeded where the
+//   built-in uploader failed on the same printer). The built-in
+//   uploader remains only as a fallback when curl.exe is absent.
+//   A refused upload fails the job with that reason and never
+//   pretends success.
 // - The "project_file" start command shape follows community
 //   integrations; the first real print through the bridge must
 //   verify it (see SETUP.md "first-print check"). If the printer
 //   rejects the command, the job fails with the reason.
-// - Still images (2275, best-effort): Bambu's camera is
-//   normally an RTSP video stream (port 322, needs a
-//   TTCode/cloud token), and grabbing a frame from it would
-//   need heavy video dependencies this thin relay deliberately
-//   avoids — no ffmpeg/OpenCV/RTSP decoding is added here.
-//   Auto-discovery therefore tries ONLY the P1/A1-style HTTP
-//   JPEG endpoint http://<ip>:6000/recording/JPG/snapshot.jpg
-//   (documented for other Bambu models, unverified for
-//   P2S/X2D). If it returns a valid JPEG it is saved to the
-//   LOCAL config; otherwise the URL stays blank and no
-//   snapshot is sent — never a fake image. Snapshots otherwise
-//   come from an owner-set snapshot_url, if one is configured.
+// - Still images (2275, best-effort, + RTSP grab Oct 30,
+//   2026): P2S/X2D do NOT serve the P1/A1-style HTTP JPEG
+//   endpoint, so auto-discovery of that URL always fails for
+//   them (proven live: HTTP JPEG unreachable on both). Their
+//   camera is an RTSPS stream on port 322, and a single frame
+//   is grabbed with the ffmpeg executable installed beside
+//   the bridge (C:\C3D_Bridge\tools\ffmpeg\bin\ffmpeg.exe,
+//   else ffmpeg on PATH) using the printer's LAN access code
+//   (the same code MQTT already uses; the stream URL embeds
+//   it, so it is NEVER logged). A grabbed frame must look
+//   like a JPEG (SOI marker, 100 bytes - 2 MB) or it is
+//   discarded, never forwarded. Snapshots otherwise come from
+//   an owner-set snapshot_url, if one is configured.
 
+using System.Diagnostics;
+using System.IO;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
@@ -60,19 +67,23 @@ public sealed class BambuAdapter : IPrinterAdapter
     // adapter instance; see TryAutoDiscoverSnapshotUrlAsync.
     private string? _discoveredSnapshotUrl;
     private bool _autoDiscoveryAttempted;
+    private bool _rtspGrabWorks;
+    private DateTime _lastRtspGrabFailure = DateTime.MinValue;
     public string SnapshotSource => _discoveredSnapshotUrl is not null || _cfg.SnapshotAutoDiscovered
-        ? "auto_discovered_bambu_http" : "owner_snapshot_url";
-    // Feed (2276): Bambu RTSP work is PARKED until a Bambu
-    // printer is online, so no feed is reported here — not
-    // even a label derived from the HTTP JPEG endpoint.
-    // Snapshots (owner-set or 2275 HTTP-discovered) remain
-    // the only Bambu camera output.
+        ? "auto_discovered_bambu_http" : _rtspGrabWorks
+        ? "bambu_rtsp_grab" : "owner_snapshot_url";
+    // Feed (2276): no live feed is reported here - still
+    // snapshots only. Still snapshots now come from the RTSP
+    // frame grab (see TryGetSnapshotAsync) when no HTTP JPEG
+    // URL exists; the grab is a still, not a stream.
     public string FeedType => "none";
     public string? FeedUrl => null;
     public Task<string?> TryAutoDiscoverFeedAsync(CancellationToken ct) => Task.FromResult<string?>(null);
     public string Name => _cfg.Name;
     public string Type => _cfg.Type;
     public string Ip => _cfg.Ip;
+    // 2026.1030.1511-farm-dedupe: Bambu identity is the factory serial.
+    public string SerialKey => _cfg.Serial ?? "";
 
     public BambuAdapter(PrinterConfig cfg)
     {
@@ -128,7 +139,12 @@ public sealed class BambuAdapter : IPrinterAdapter
                 Name = Name,
                 Type = Type,
                 Ip = Ip,
+                Serial = SerialKey,
                 State = state,
+                // AUTO-START BUILD: the raw gcode_state word
+                // survives beside the mapped state, so FINISH
+                // is visible as a finish instead of flat "idle".
+                NativeState = gcodeState,
                 ProgressPercent = percent,
                 RemainingSeconds = remaining,
                 Detail = detail,
@@ -164,12 +180,22 @@ public sealed class BambuAdapter : IPrinterAdapter
             }
         }
 
+        // AUTO-START BUILD: every populated tray is reported
+        // as a slot, even when no single loaded filament can
+        // be picked — the dashboard shows per-slot rows from
+        // these instead of guessing an active tray.
+        var slots = trays.Select(t => new AmsSlot
+        {
+            Slot = t.Id,
+            Material = t.Type,
+            Color = NormalizeColor(t.Color),
+        }).ToList();
         if (trays.Count == 0)
-            return new AmsState { Known = false, Detail = "No populated AMS tray reported by the printer." };
+            return new AmsState { Known = false, Detail = "No populated AMS tray reported by the printer.", Slots = slots };
         if (trays.Count > 1)
-            return new AmsState { Known = false, Detail = $"Multiple AMS trays populated ({trays.Count}); the active tray cannot be determined from this data, so AMS is reported as unknown rather than guessed." };
+            return new AmsState { Known = false, Detail = $"Multiple AMS trays populated ({trays.Count}); the active tray cannot be determined from this data, so AMS is reported as unknown rather than guessed.", Slots = slots };
         var only = trays[0];
-        return new AmsState { Known = true, Material = only.Type, Color = NormalizeColor(only.Color), Detail = $"AMS tray {only.Id}." };
+        return new AmsState { Known = true, Material = only.Type, Color = NormalizeColor(only.Color), Detail = $"AMS tray {only.Id}.", Slots = slots };
     }
 
     private static string NormalizeColor(string raw)
@@ -235,6 +261,66 @@ public sealed class BambuAdapter : IPrinterAdapter
         }
     }
 
+    /// <summary>AUTO-START BUILD — identify a Bambu MQTT
+    /// candidate by serial: connect to the candidate IP
+    /// with the known printer's serial + access code,
+    /// subscribe to device/{serial}/report, send pushall,
+    /// and return true ONLY if a report arrives on that
+    /// serial's topic. A report on that topic proves the
+    /// candidate IS that printer — no other printer
+    /// answers for its serial. Used ONLY by IP-change
+    /// auto-detection. Mirrors FetchReportAsync, but
+    /// parameterized by candidate IP so a moved printer
+    /// can be found before its config is updated.</summary>
+    public static async Task<bool> TryIdentifyAsync(string ip, int mqttPort, string serial, string accessCode, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(serial) || string.IsNullOrWhiteSpace(accessCode))
+            return false;
+        var factory = new MqttFactory();
+        using var client = factory.CreateMqttClient();
+        var received = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.ApplicationMessageReceivedAsync += e =>
+        {
+            received.TrySetResult(true);
+            return Task.CompletedTask;
+        };
+        var options = new MqttClientOptionsBuilder()
+            .WithTcpServer(ip, mqttPort)
+            .WithCredentials("bblp", accessCode)
+            .WithClientId($"c3d-bridge-{Guid.NewGuid():N}"[..24])
+            .WithCleanSession()
+            .WithTlsOptions(o => o
+                .WithCertificateValidationHandler(_ => true)
+                .WithSslProtocols(SslProtocols.Tls12))
+            .Build();
+        try
+        {
+            await client.ConnectAsync(options, ct);
+            await client.SubscribeAsync(new MqttClientSubscribeOptionsBuilder()
+                .WithTopicFilter(f => f.WithTopic($"device/{serial}/report"))
+                .Build(), ct);
+            var request = JsonSerializer.Serialize(new
+            {
+                pushing = new { sequence_id = "1", command = "pushall" },
+            });
+            await client.PublishAsync(new MqttApplicationMessageBuilder()
+                .WithTopic($"device/{serial}/request")
+                .WithPayload(request)
+                .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
+                .Build(), ct);
+            var completed = await Task.WhenAny(received.Task, Task.Delay(TimeSpan.FromSeconds(6), ct));
+            return completed == received.Task && await received.Task;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            try { await client.DisconnectAsync(); } catch { /* best effort */ }
+        }
+    }
+
     private async Task<(bool Ok, string Reason)> PublishCommandAsync(object command, CancellationToken ct)
     {
         var (ok, reason) = CheckIdentity();
@@ -277,8 +363,21 @@ public sealed class BambuAdapter : IPrinterAdapter
         if (!ok) return (false, reason);
         try
         {
-            return await ImplicitFtps.UploadAsync(_cfg.Ip, 990, "bblp", _cfg.AccessCode!,
+            // Primary path: curl reuses the control channel's TLS session
+            // for the data channel, which Bambu printers on current
+            // firmware require (proven live Nov 3, 2026: 90MB via curl
+            // succeeded where the built-in uploader failed).
+            var curl = await CurlFtps.UploadAsync(_cfg.Ip, "bblp", _cfg.AccessCode!,
                 localPath, "/cache/" + fileName, ct);
+            if (curl.CurlMissing)
+            {
+                // curl.exe not present on this machine: fall back to the
+                // built-in uploader rather than failing outright.
+                return await ImplicitFtps.UploadAsync(_cfg.Ip, 990, "bblp", _cfg.AccessCode!,
+                    localPath, "/cache/" + fileName, ct);
+            }
+            if (!curl.Ok) return (false, $"FTPS upload to printer '{Name}' failed: {curl.Reason}");
+            return (true, "");
         }
         catch (Exception ex)
         {
@@ -305,10 +404,91 @@ public sealed class BambuAdapter : IPrinterAdapter
         return PublishCommandAsync(command, ct);
     }
 
+    /// <summary>AUTO-START BUILD — pause / cancel / chamber
+    /// light / home, all via the same MQTT request topic as
+    /// StartPrintAsync. Command shapes are community-
+    /// documented Bambu MQTT (Bambu Lab forum "MQTT for A1"
+    /// thread; Home Assistant X1/X1C MQTT thread, which also
+    /// shows lights_report confirming ledctrl node/mode):
+    /// print pause / stop, system ledctrl chamber_light,
+    /// print gcode_line for G28. These shapes are NOT yet
+    /// proven on P2S/X2D specifically — the first real use
+    /// on each model is a first-use verification (the bridge
+    /// reports the printer's answer honestly either way;
+    /// a rejected command fails the control, never claims
+    /// success). Resume is deliberately NOT added here:
+    /// the dashboard exposes no resume dispatch, and this
+    /// build invents no dashboard feature.</summary>
+    public Task<(bool Ok, string Reason)> PausePrintAsync(CancellationToken ct)
+    {
+        var command = new
+        {
+            print = new
+            {
+                sequence_id = "1",
+                command = "pause",
+            },
+        };
+        return PublishCommandAsync(command, ct);
+    }
+
+    public Task<(bool Ok, string Reason)> CancelPrintAsync(CancellationToken ct)
+    {
+        var command = new
+        {
+            print = new
+            {
+                sequence_id = "1",
+                command = "stop",
+                param = "",
+            },
+        };
+        return PublishCommandAsync(command, ct);
+    }
+
+    public Task<(bool Ok, string Reason)> SetChamberLedAsync(bool on, CancellationToken ct)
+    {
+        var command = new
+        {
+            system = new
+            {
+                sequence_id = "1",
+                command = "ledctrl",
+                led_node = "chamber_light",
+                led_mode = on ? "on" : "off",
+            },
+        };
+        return PublishCommandAsync(command, ct);
+    }
+
+    /// <summary>Home all axes via gcode_line G28. Executed
+    /// ONLY behind the bridge's home_power_allowed gate in
+    /// FarmPoller (owner A7 decision) — calling this method
+    /// directly bypasses that gate, so only FarmPoller may
+    /// call it.</summary>
+    public Task<(bool Ok, string Reason)> HomeAsync(CancellationToken ct)
+    {
+        var command = new
+        {
+            print = new
+            {
+                sequence_id = "1",
+                command = "gcode_line",
+                param = "G28",
+            },
+        };
+        return PublishCommandAsync(command, ct);
+    }
+
     public async Task<byte[]?> TryGetSnapshotAsync(CancellationToken ct)
     {
         var url = !string.IsNullOrWhiteSpace(_cfg.SnapshotUrl) ? _cfg.SnapshotUrl : _discoveredSnapshotUrl;
-        if (string.IsNullOrWhiteSpace(url)) return null;
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            // No HTTP JPEG URL (the normal P2S/X2D case):
+            // fall back to a single RTSP frame grab.
+            return await TryGrabRtspFrameAsync(ct);
+        }
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
@@ -325,19 +505,92 @@ public sealed class BambuAdapter : IPrinterAdapter
         }
     }
 
+    /// <summary>RTSP frame grab (Oct 30, 2026): P2S/X2D expose
+    /// no HTTP JPEG endpoint, so a still is grabbed from the
+    /// printer's RTSPS stream with ffmpeg: one frame, JPEG to
+    /// stdout, validated like the HTTP path (SOI marker, 100
+    /// bytes - 2 MB). The stream URL embeds the LAN access
+    /// code, so it is NEVER logged, and ffmpeg's stderr is
+    /// never logged either (it echoes the input URL). ffmpeg
+    /// resolves from C:\C3D_Bridge\tools\ffmpeg\bin\ffmpeg.exe
+    /// first, then PATH. Failures back off 10 minutes so a
+    /// broken camera path cannot stall the worker loop; a
+    /// 30-second process timeout bounds each attempt.</summary>
+    private async Task<byte[]?> TryGrabRtspFrameAsync(CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_cfg.AccessCode)) return null;
+        if (DateTime.UtcNow - _lastRtspGrabFailure < TimeSpan.FromMinutes(10)) return null;
+        try
+        {
+            // URL built in memory only - never logged. The
+            // printer's certificate is self-signed, so TLS
+            // verification is disabled (same LAN-only trust
+            // as the MQTT connection).
+            var url = $"rtsps://bblp:{_cfg.AccessCode}@{_cfg.Ip}:322/streaming/live/1";
+            var psi = new ProcessStartInfo
+            {
+                FileName = ResolveFfmpegPath(),
+                Arguments = $"-nostats -loglevel error -tls_verify 0 -rtsp_transport tcp -i \"{url}\" -frames:v 1 -q:v 2 -f image2 pipe:1",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using var proc = Process.Start(psi);
+            if (proc is null) return null;
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(30));
+                var stderrTask = proc.StandardError.ReadToEndAsync(timeout.Token);
+                await using var ms = new MemoryStream();
+                await proc.StandardOutput.BaseStream.CopyToAsync(ms, timeout.Token);
+                await proc.WaitForExitAsync(timeout.Token);
+                _ = await stderrTask; // Drained only to avoid a pipe stall; never logged (may echo the URL).
+                if (proc.ExitCode != 0) throw new InvalidOperationException($"ffmpeg exited {proc.ExitCode}");
+                var bytes = ms.ToArray();
+                if (bytes.Length < 100 || bytes.Length > 2_000_000) return null;
+                if (bytes[0] != 0xFF || bytes[1] != 0xD8) return null;
+                _rtspGrabWorks = true;
+                return bytes;
+            }
+            finally
+            {
+                try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            if (ct.IsCancellationRequested) throw;
+            _lastRtspGrabFailure = DateTime.UtcNow;
+            Program.Log($"Bambu RTSP grab for '{Name}' timed out after 30 seconds; retry in 10 minutes.");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _lastRtspGrabFailure = DateTime.UtcNow;
+            Program.Log($"Bambu RTSP grab for '{Name}' failed ({ex.GetType().Name}); retry in 10 minutes.");
+            return null;
+        }
+    }
+
+    private static string ResolveFfmpegPath()
+    {
+        const string toolsPath = @"C:\C3D_Bridge\tools\ffmpeg\bin\ffmpeg.exe";
+        if (File.Exists(toolsPath)) return toolsPath;
+        return "ffmpeg";
+    }
+
     /// <summary>Camera auto-discovery (2275), best-effort only.
     /// Never overwrites an owner-set URL. Tries ONLY
-    /// http://&lt;ip&gt;:6000/recording/JPG/snapshot.jpg — the
-    /// P1/A1-style HTTP JPEG endpoint, unverified for P2S/X2D.
-    /// A valid JPEG (100 bytes – 2 MB, SOI marker) is kept for
-    /// this run and returned for the Worker to persist to the
-    /// LOCAL config only. On any miss, the URL stays blank and
-    /// the miss is logged once, honestly: Bambu's camera is
-    /// normally an RTSP video stream (port 322, needs a
-    /// TTCode/cloud token), and frame-grabbing from it would
-    /// need heavy video dependencies this thin relay avoids —
-    /// no ffmpeg/OpenCV/RTSP decoding is added. No URL is
-    /// logged.</summary>
+    /// http://&lt;ip&gt;:6000/recording/JPG/snapshot.jpg - the
+    /// P1/A1-style HTTP JPEG endpoint, unverified for P2S/X2D
+    /// (and proven absent on both live printers). A valid JPEG
+    /// (100 bytes - 2 MB, SOI marker) is kept for this run and
+    /// returned for the Worker to persist to the LOCAL config
+    /// only. On any miss, the URL stays blank and snapshots
+    /// fall back to the RTSP frame grab (see
+    /// TryGetSnapshotAsync). No URL is logged.</summary>
     public async Task<string?> TryAutoDiscoverSnapshotUrlAsync(CancellationToken ct)
     {
         if (_autoDiscoveryAttempted) return null;
@@ -355,12 +608,12 @@ public sealed class BambuAdapter : IPrinterAdapter
                 Program.Log($"Camera auto-discovery for '{Name}': snapshot URL auto-discovered from the Bambu HTTP JPEG endpoint.");
                 return url;
             }
-            Program.Log($"Camera auto-discovery for '{Name}': Bambu HTTP JPEG endpoint did not return a valid JPEG; no snapshot URL discovered. Bambu's camera is normally an RTSP video stream (port 322, needs a TTCode/cloud token) and frame-grabbing from it is not built into this thin relay.");
+            Program.Log($"Camera auto-discovery for '{Name}': Bambu HTTP JPEG endpoint did not return a valid JPEG; no snapshot URL discovered. snapshots will use the RTSP frame grab instead.");
             return null;
         }
         catch (Exception ex)
         {
-            Program.Log($"Camera auto-discovery for '{Name}': Bambu HTTP JPEG endpoint unreachable ({ex.Message}); no snapshot URL discovered. Bambu's camera is normally an RTSP video stream (port 322, needs a TTCode/cloud token) and frame-grabbing from it is not built into this thin relay.");
+            Program.Log($"Camera auto-discovery for '{Name}': Bambu HTTP JPEG endpoint unreachable ({ex.Message}); no snapshot URL discovered. snapshots will use the RTSP frame grab instead.");
             return null;
         }
     }
@@ -370,6 +623,7 @@ public sealed class BambuAdapter : IPrinterAdapter
         Name = Name,
         Type = Type,
         Ip = Ip,
+        Serial = SerialKey,
         State = "offline",
         Detail = detail,
         Ams = new AmsState { Known = false, Detail = "Printer unreachable; AMS unknown." },
@@ -458,4 +712,98 @@ internal static class ImplicitFtps
         if (!int.TryParse(parts[4], out var p1) || !int.TryParse(parts[5], out var p2)) return ("", 0);
         return (string.Join(".", parts[..4]), p1 * 256 + p2);
     }
+}
+
+/// <summary>FTPS uploader via curl.exe (primary path since Nov 3, 2026).
+/// curl reuses the control channel's TLS session for the data channel
+/// and negotiates PBSZ/PROT itself, which is what Bambu printers on
+/// current firmware require. The built-in SslStream uploader opens a
+/// fresh data-channel session that those printers refuse by dropping
+/// the connection mid-transfer. Credentials travel only in a temp
+/// curl config file that is deleted afterwards; they never appear on
+/// the command line, and any returned reason has them redacted, so
+/// they cannot leak into the bridge log or the dashboard.</summary>
+internal static class CurlFtps
+{
+    public static async Task<(bool Ok, string Reason, bool CurlMissing)> UploadAsync(
+        string host, string user, string password,
+        string localPath, string remotePath, CancellationToken ct)
+    {
+        var curlExe = FindCurlExe();
+        if (curlExe is null) return (false, "curl.exe not found", true);
+        long fileLen;
+        try { fileLen = new FileInfo(localPath).Length; }
+        catch (Exception ex) { return (false, $"cannot read local file: {ex.Message}", false); }
+        var configPath = Path.Combine(Path.GetTempPath(), "c3d-curl-" + Guid.NewGuid().ToString("N") + ".txt");
+        try
+        {
+            string Esc(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            var segments = remotePath.Split('/', StringSplitOptions.RemoveEmptyEntries)
+                .Select(Uri.EscapeDataString);
+            var urlPath = "/" + string.Join("/", segments);
+            var config = string.Join("\n",
+                "user = \"" + Esc(user) + ":" + Esc(password) + "\"",
+                "insecure",
+                "ftp-ssl",
+                "upload-file = \"" + Esc(localPath) + "\"",
+                "url = \"ftps://" + host + ":990" + urlPath + "\"",
+                "silent",
+                "show-error",
+                "write-out = \"%{size_upload}\"");
+            await File.WriteAllTextAsync(configPath, config, ct);
+            var psi = new ProcessStartInfo
+            {
+                FileName = curlExe,
+                Arguments = "-K \"" + configPath + "\"",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using var proc = new Process { StartInfo = psi };
+            proc.Start();
+            using var reg = ct.Register(() => { try { proc.Kill(entireProcessTree: true); } catch { /* best effort */ } });
+            var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
+            var stderr = await proc.StandardError.ReadToEndAsync(ct);
+            await proc.WaitForExitAsync(ct);
+            if (proc.ExitCode != 0)
+            {
+                var err = Redact(stderr.Trim(), password);
+                if (err.Length > 300) err = err[..300];
+                return (false, $"curl FTPS upload failed (exit {proc.ExitCode}): {err}", false);
+            }
+            if (!long.TryParse(stdout.Trim(), out var uploaded) || uploaded != fileLen)
+                return (false, $"curl FTPS upload size mismatch (uploaded {stdout.Trim()} of {fileLen} bytes)", false);
+            return (true, "", false);
+        }
+        catch (Exception ex)
+        {
+            return (false, $"curl FTPS upload failed: {Redact(ex.Message, password)}", false);
+        }
+        finally
+        {
+            try { File.Delete(configPath); } catch { /* best effort */ }
+        }
+    }
+
+    private static string? FindCurlExe()
+    {
+        var dirs = new List<string>();
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (!string.IsNullOrEmpty(path)) dirs.AddRange(path.Split(Path.PathSeparator));
+        try { dirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.System)); } catch { /* best effort */ }
+        foreach (var dir in dirs)
+        {
+            try
+            {
+                var candidate = Path.Combine(dir.Trim(), "curl.exe");
+                if (File.Exists(candidate)) return candidate;
+            }
+            catch { /* ignore bad PATH entries */ }
+        }
+        return null;
+    }
+
+    private static string Redact(string s, string secret) =>
+        string.IsNullOrEmpty(secret) ? s : s.Replace(secret, "****");
 }

@@ -33,7 +33,7 @@ namespace C3DBridge;
 
 public static class Program
 {
-    public const string Version = "2026.1024.2121";
+    public const string Version = "2026.1030.1854-rtsp";
 
     // Single-instance, newest-wins: only one bridge runs at a time.
     // A running instance writes its version + pid to a temp file.

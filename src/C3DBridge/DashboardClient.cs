@@ -115,12 +115,67 @@ public sealed class DashboardClient : IDisposable
                     ip = p.Ip,
                     status = p.State,
                     state = p.State,
+                    // AUTO-START BUILD: the printer's own raw
+                    // state word, verbatim, so a finish word
+                    // survives beside the mapped status.
+                    native_state = p.NativeState,
                     progress_percent = p.ProgressPercent,
                     remaining_seconds = p.RemainingSeconds,
                     current_job_key = p.CurrentJobKey,
                     detail = p.Detail,
-                    ams = new { known = p.Ams.Known, material = p.Ams.Material, color = p.Ams.Color, detail = p.Ams.Detail },
+                    // AUTO-START BUILD: per-tray slots ride
+                    // inside ams (the dashboard already reads
+                    // ams.slots); light_state rides top-level
+                    // (the dashboard already reads it).
+                    ams = new
+                    {
+                        known = p.Ams.Known,
+                        material = p.Ams.Material,
+                        color = p.Ams.Color,
+                        detail = p.Ams.Detail,
+                        slots = p.Ams.Slots.Select(s => new
+                        {
+                            slot = s.Slot,
+                            material = s.Material,
+                            color = s.Color,
+                        }),
+                    },
+                    light_state = p.LightState,
                     camera_available = p.CameraAvailable,
+                    // FLUIDD SLICE 1 FIX: the Worker overlays
+                    // nozzle diameters, last-parse fields, and
+                    // now thermals / printer files / job history
+                    // onto PrinterStatus, but this projection
+                    // previously re-listed only a subset — so
+                    // every overlaid field was silently dropped
+                    // before sending, and the dashboard panels
+                    // could never populate. The projection must
+                    // carry every field the dashboard reads;
+                    // anything not listed here never arrives.
+                    nozzle_diameters = p.NozzleDiameters,
+                    declared_file_tool = p.DeclaredFileTool,
+                    declared_tool_sequence = p.DeclaredToolSequence,
+                    file_profile = p.FileProfile,
+                    file_nozzle_mm = p.FileNozzleMm,
+                    thermals = p.Thermals.Select(t => new
+                    {
+                        name = t.Name,
+                        actual = t.Actual,
+                        target = t.Target,
+                    }),
+                    printer_files = p.PrinterFiles == null ? null : p.PrinterFiles.Select(f => new
+                    {
+                        filename = f.Filename,
+                        size = f.Size,
+                        modified = f.Modified,
+                    }),
+                    job_history = p.JobHistory == null ? null : p.JobHistory.Select(h => new
+                    {
+                        filename = h.Filename,
+                        status = h.Status,
+                        duration = h.Duration,
+                        started = h.Started,
+                    }),
                 }),
             }, ct);
         return ok;
@@ -260,6 +315,180 @@ public sealed class DashboardClient : IDisposable
         var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/job-report",
             new { job_id = jobId, status, reason, filament_used_g = filamentUsedG }, ct);
         return ok;
+    }
+
+    /// <summary>BRIDGE-READS BUILD: report a streaming G-code
+    /// parse for a farm job to the dashboard's farm/job-report
+    /// route with status "file_parsed". The dashboard stores
+    /// the declaration on the job record WITHOUT changing the
+    /// job's status or clearing its dispatch (see the
+    /// dashboard's file_parsed branch). A failed report is
+    /// informational only: the caller must NOT hold or fail
+    /// the job for it, and an older dashboard that rejects
+    /// the unknown status simply never stores the parse.</summary>
+    public async Task<bool> ReportFileParseAsync(string jobId, GcodeDeclaration decl, CancellationToken ct)
+    {
+        var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/job-report",
+            new
+            {
+                job_id = jobId,
+                status = "file_parsed",
+                declared_tool = decl.FirstTool,
+                tool_sequence = string.Join(",", decl.ToolsInOrder),
+                file_profile = decl.Profile,
+                file_nozzle_mm = decl.SlicedNozzleMm,
+                slicer = decl.Slicer,
+                layers = decl.Layers,
+            }, ct);
+        return ok;
+    }
+
+    /// <summary>AUTO-START BUILD: report a farm job control
+    /// outcome that needs its command named — the dashboard's
+    /// control_failed branch requires it (a pause/stop/fail
+    /// command that the bridge could not execute keeps the
+    /// dispatch pending so the bridge retries on its next
+    /// poll, instead of silently dropping the operator's
+    /// pause/stop). Status is "control_failed" here; the
+    /// command is "pause", "stop", or "fail".</summary>
+    public async Task<bool> ReportFarmControlAsync(string jobId, string status, string reason, string command, CancellationToken ct)
+    {
+        var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/job-report",
+            new { job_id = jobId, status, reason, command }, ct);
+        return ok;
+    }
+
+    /// <summary>AUTO-START BUILD: poll GET farm/slice-jobs for
+    /// pending in-dashboard slice requests. Returns null on
+    /// any failure (caller logs the reason).</summary>
+    public async Task<(List<SliceJob>? Jobs, string? Problem)> PollSliceJobsAsync(CancellationToken ct)
+    {
+        var (ok, status, body) = await SendAsync(HttpMethod.Get, "/wp-json/c3d-shipping/v1/farm/slice-jobs", null, ct);
+        if (!ok)
+        {
+            if (status == System.Net.HttpStatusCode.NotFound)
+                return (null, "Dashboard slice endpoints are not installed yet.");
+            if (status == System.Net.HttpStatusCode.Unauthorized)
+                return (null, "Bridge API key was rejected by the dashboard.");
+            return (null, $"Slice job poll failed ({(int)status}): {Trim(body)}");
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var jobs = new List<SliceJob>();
+            if (doc.RootElement.TryGetProperty("jobs", out var arr) && arr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in arr.EnumerateArray())
+                {
+                    var job = JsonSerializer.Deserialize<SliceJob>(el.GetRawText(), JsonOptions);
+                    if (job is not null) jobs.Add(job);
+                }
+            }
+            return (jobs, null);
+        }
+        catch (Exception ex)
+        {
+            return (null, $"Dashboard returned a slice job list the bridge could not read: {ex.Message}");
+        }
+    }
+
+    /// <summary>AUTO-START BUILD: report a slice outcome to
+    /// POST farm/slice-report. Status is "done" (gcode_base64
+    /// + file_name + sliced_for carried) or "failed" (reason
+    /// carried, no file). The dashboard saves a done file
+    /// as the library entry's sliced attachment; a failed
+    /// slice never attaches anything.</summary>
+    public async Task<bool> ReportSliceAsync(string sliceJobId, string status, string reason,
+        string? gcodeBase64, string? fileName, string? slicedFor, CancellationToken ct)
+    {
+        var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/slice-report",
+            new
+            {
+                slice_job_id = sliceJobId,
+                status,
+                reason,
+                gcode_base64 = gcodeBase64,
+                file_name = fileName,
+                sliced_for = slicedFor,
+            }, ct);
+        return ok;
+    }
+
+    /// <summary>AUTO-START BUILD: report a detected printer
+    /// move to POST farm/printer-moved. The dashboard
+    /// updates its manual printer record for that name to
+    /// the new IP and posts a Farm tab notice. A move is
+    /// reported only when the bridge matched the printer by
+    /// serial (Bambu) or learned Moonraker hostname
+    /// (Snapmaker) — never by "an open port looks close".
+    /// 2026.1030.1511-farm-dedupe: the report also carries
+    /// the serial identity key, so the dashboard matches by
+    /// serial first, then name, then old IP.</summary>
+    public async Task<bool> ReportPrinterMovedAsync(string name, string type,
+        string oldIp, string newIp, string matchEvidence, string serial, CancellationToken ct)
+    {
+        var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/printer-moved",
+            new
+            {
+                name,
+                type,
+                old_ip = oldIp,
+                new_ip = newIp,
+                match_evidence = matchEvidence,
+                serial,
+            }, ct);
+        return ok;
+    }
+
+    /// <summary>Farm controls (DRAFT 2026-10-29, not yet
+    /// compile-verified): poll GET farm/controls. The
+    /// dashboard serves pending control intents recorded by
+    /// the Lights / Home / Power buttons; each entry names a
+    /// printer (IP + name) and a command. Returns null on any
+    /// failure (caller logs the reason). The dashboard clears
+    /// a control from pending when its report arrives, so a
+    /// failed report simply retries on the next poll.</summary>
+    public async Task<(List<FarmControl>? Controls, string? Problem)> PollFarmControlsAsync(CancellationToken ct)
+    {
+        var (ok, status, body) = await SendAsync(HttpMethod.Get, "/wp-json/c3d-shipping/v1/farm/controls", null, ct);
+        if (!ok)
+        {
+            if (status == System.Net.HttpStatusCode.NotFound)
+                return (null, "Dashboard farm controls endpoint is not installed yet.");
+            if (status == System.Net.HttpStatusCode.Unauthorized)
+                return (null, "Bridge API key was rejected by the dashboard.");
+            return (null, $"Farm control poll failed ({(int)status}): {Trim(body)}");
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var controls = new List<FarmControl>();
+            if (doc.RootElement.TryGetProperty("controls", out var arr) && arr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in arr.EnumerateArray())
+                {
+                    var control = JsonSerializer.Deserialize<FarmControl>(el.GetRawText(), JsonOptions);
+                    if (control is not null) controls.Add(control);
+                }
+            }
+            return (controls, null);
+        }
+        catch (Exception ex)
+        {
+            return (null, $"Dashboard returned a farm control list the bridge could not read: {ex.Message}");
+        }
+    }
+
+    /// <summary>Farm controls (DRAFT 2026-10-29): report one
+    /// control outcome to POST farm/control-report. The
+    /// dashboard records it as the control's confirmation and
+    /// clears the pending intent. ok=false never claims the
+    /// control worked — the detail says why it did not.</summary>
+    public async Task<bool> ReportControlAsync(string printerIp, string command, bool ok, string detail, CancellationToken ct)
+    {
+        var (sent, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/control-report",
+            new { printer_ip = printerIp, command, ok, detail }, ct);
+        return sent;
     }
 
     /// <summary>Bridge OCR stage: poll GET bridge/ocr-jobs.
