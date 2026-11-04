@@ -396,9 +396,9 @@ public sealed class BambuAdapter : IPrinterAdapter
             {
                 sequence_id = "1",
                 command = "project_file",
-                param = "/cache/" + fileName,
+                param = "Metadata/plate_1.gcode", url = "file:///sdcard/cache/" + fileName, file = fileName, md5 = "", bed_type = "auto", use_ams = true, ams_mapping = new[] { 0, -1, -1, -1, -1 }, ams_mapping2 = new[] { new { ams_id = 0, slot_id = 0 } }, timelapse = false, bed_leveling = true, flow_cali = false, vibration_cali = false, layer_inspect = false,
                 subtask_name = fileName,
-                task_id = jobKey,
+                project_id = "0", task_id = "0", subtask_id = "0",
             },
         };
         return PublishCommandAsync(command, ct);
