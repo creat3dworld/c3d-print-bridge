@@ -235,7 +235,7 @@ public sealed class FarmPoller
         // Moonraker print/start cannot print a 3MF, so the
         // refusal below stands for every other adapter.
         var isBambuPlate = adapter is BambuAdapter &&
-            fileName.EndsWith(".gcode.3mf", StringComparison.OrdinalIgnoreCase);
+            (fileName.EndsWith(".gcode.3mf", StringComparison.OrdinalIgnoreCase) || fileName.EndsWith(".gcode_.3mf", StringComparison.OrdinalIgnoreCase));
         if (!isBambuPlate && ext != ".gcode" && ext != ".gco")
         {
             // Defense in depth: even a "sliced" record must
