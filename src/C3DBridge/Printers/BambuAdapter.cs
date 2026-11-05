@@ -594,6 +594,28 @@ public sealed class BambuAdapter : IPrinterAdapter
     /// report". Anything else (missing section, wrong shape,
     /// any mode other than on/off) is null = unreported,
     /// never a guess.</summary>
+    /// <summary>DIAG BUILD (2026.1105): one-line description
+    /// of what a fresh report actually carries for
+    /// lights_report, so a failed verification leaves
+    /// evidence instead of silence. Distinguishes "no system
+    /// section", "no lights_report", and "present but
+    /// unparsable/wrong shape", and shows the raw value
+    /// truncated to 200 chars — never a whole report.</summary>
+    private static string DescribeLightsReport(JsonElement root)
+    {
+        try
+        {
+            if (!root.TryGetProperty("system", out var system)) return "system: absent";
+            if (!system.TryGetProperty("lights_report", out var report)) return "system: present, lights_report: absent";
+            var raw = report.GetRawText();
+            if (raw.Length > 200) raw = raw.Substring(0, 200) + "…";
+            var kind = report.ValueKind.ToString().ToLowerInvariant();
+            var extra = report.ValueKind == JsonValueKind.Array ? $" len={report.GetArrayLength()}" : "";
+            return $"lights_report: {kind}{extra} raw={raw}";
+        }
+        catch { return "lights_report: unreadable"; }
+    }
+
     private static string? ParseLightsReport(JsonElement root)
     {
         try
@@ -651,20 +673,36 @@ public sealed class BambuAdapter : IPrinterAdapter
         if (!ok) return (false, _verifiedLightMode, reason);
         var report = await FetchReportAsync(ct);
         if (report is null)
+        {
+            // DIAG BUILD (2026.1105): the no-report branch
+            // previously returned its reason silently; the
+            // caller (pre-snapshot ensure) discards the
+            // reason, so nothing in the log said why.
+            Program.Log($"[Bambu] Chamber light verify on '{Name}': verification report request returned no report — not verified.");
             return (false, _verifiedLightMode, "Light command sent, but the printer did not answer the verification report request.");
+        }
         try
         {
             using var doc = JsonDocument.Parse(report);
             var mode = ParseLightsReport(doc.RootElement);
+            // DIAG BUILD (2026.1105): log what the report
+            // actually carried, once per verify attempt.
+            var desc = DescribeLightsReport(doc.RootElement);
             if (mode is null)
+            {
+                Program.Log($"[Bambu] Chamber light verify on '{Name}': {desc}; parsed mode: none — not verified.");
                 return (false, _verifiedLightMode, "Light command sent, but the printer's report carries no lights_report, so the light state is unverified, not on.");
+            }
             _verifiedLightMode = mode;
             _verifiedLightUtc = DateTime.UtcNow;
-            Program.Log($"[Bambu] Chamber light on '{Name}': printer reports chamber_light mode '{mode}'.");
+            Program.Log($"[Bambu] Chamber light on '{Name}': printer reports chamber_light mode '{mode}' ({desc}).");
             return (string.Equals(mode, "on", StringComparison.OrdinalIgnoreCase), mode, "");
         }
         catch (Exception ex)
         {
+            // DIAG BUILD (2026.1105): same silent-return
+            // problem as the no-report branch — log it.
+            Program.Log($"[Bambu] Chamber light verify on '{Name}': verification report could not be read: {ex.Message} — not verified.");
             return (false, _verifiedLightMode, $"Light command sent, but the verification report could not be read: {ex.Message}");
         }
     }
