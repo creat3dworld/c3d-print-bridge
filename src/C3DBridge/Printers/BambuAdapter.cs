@@ -64,6 +64,10 @@ public sealed class BambuAdapter : IPrinterAdapter
 {
     private readonly PrinterConfig _cfg;
     private readonly int _mqttPort;
+    // 2026.1105-push-log: last push summary written to the log, so each
+    // printer answer is recorded once per change (and once on the first
+    // push) instead of once per status poll.
+    private string? _lastPushSummary;
     // Camera auto-discovery (2275): at most one attempt per
     // adapter instance; see TryAutoDiscoverSnapshotUrlAsync.
     private string? _discoveredSnapshotUrl;
@@ -101,12 +105,23 @@ public sealed class BambuAdapter : IPrinterAdapter
         return (true, "");
     }
 
+    // 2026.1105-push-log: record a printer push answer once per change
+    // (and once on the first push). Logging only: no state, gate, or
+    // status value changes here.
+    private void LogPushSummary(string summary)
+    {
+        if (string.Equals(summary, _lastPushSummary, StringComparison.Ordinal)) return;
+        _lastPushSummary = summary;
+        Program.Log($"[Bambu] Push {Name} ({Ip}): {summary}");
+    }
+
     public async Task<PrinterStatus> GetStatusAsync(CancellationToken ct)
     {
         var (ok, reason) = CheckIdentity();
         if (!ok) return Offline(reason);
 
         var report = await FetchReportAsync(ct);
+        if (report is null) LogPushSummary("no report (printer did not answer the push request)");
         if (report is null)
             return Offline($"Could not reach printer '{Name}' at {_cfg.Ip}:{_mqttPort} (MQTT). Check the IP, Developer/LAN mode, and the access code.");
 
@@ -118,6 +133,31 @@ public sealed class BambuAdapter : IPrinterAdapter
                 return Offline($"Printer '{Name}' returned a report without print state.");
 
             var gcodeState = print.TryGetProperty("gcode_state", out var gs) ? gs.GetString() ?? "" : "";
+        // 2026.1105-push-log: record what the printer actually answered
+        // (logging only). print_error is logged when nonzero; HMS entries
+        // are logged as code:attr; subtask_id and gcode_state always.
+        var subtaskId = print.TryGetProperty("subtask_id", out var st)
+            ? (st.ValueKind == JsonValueKind.String ? st.GetString() ?? "" : st.GetRawText())
+            : "";
+        var printError = 0u;
+        if (print.TryGetProperty("print_error", out var pe))
+            {
+                if (pe.ValueKind == JsonValueKind.Number && pe.TryGetUInt32(out var peNum)) printError = peNum;
+                else if (pe.ValueKind == JsonValueKind.String && uint.TryParse(pe.GetString(), out var peStr)) printError = peStr;
+            }        var hmsText = "";
+        if (print.TryGetProperty("hms", out var hms) && hms.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var entry in hms.EnumerateArray())
+                    {
+                        var code = entry.TryGetProperty("code", out var hc) ? hc.GetRawText() : "?";
+                        var attr = entry.TryGetProperty("attr", out var ha) ? ha.GetRawText() : "?";
+                        hmsText += (hmsText.Length == 0 ? "" : ",") + code + ":" + attr;
+                    }
+                }
+        var pushSummary = $"gcode_state={gcodeState} subtask_id={subtaskId}"
+            + (printError != 0 ? $" print_error={printError}" : "")
+            + (hmsText.Length > 0 ? $" hms=[{hmsText}]" : "");
+        LogPushSummary(pushSummary);
             var state = gcodeState switch
             {
                 "RUNNING" => "printing",
@@ -435,6 +475,8 @@ public sealed class BambuAdapter : IPrinterAdapter
                 project_id = "0", task_id = "0", subtask_id = "0",
             },
         };
+        // 2026.1105-push-log: concise StartPrint record (file / subtask_name / param).
+        Program.Log($"[Bambu] StartPrint publish: file={startFileName} subtask_name={startFileName} param={startParam}");
         Program.Log($"[Bambu] StartPrint payload: {JsonSerializer.Serialize(command)}");
         var startResult = await PublishCommandAsync(command, ct);
         Program.Log($"[Bambu] StartPrint publish result: ok={startResult.Ok} reason={startResult.Reason}");
