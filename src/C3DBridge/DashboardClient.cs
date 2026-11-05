@@ -141,6 +141,14 @@ public sealed class DashboardClient : IDisposable
                         }),
                     },
                     light_state = p.LightState,
+                    // GATE-LIGHT BUILD (2026.1105): printer-
+                    // confirmed light mode + observation time,
+                    // beside the bridge-executed light_state:
+                    // "on" here means the printer itself
+                    // reported chamber_light on, not merely
+                    // that this bridge once sent ledctrl.
+                    light_verified = p.LightVerified,
+                    light_verified_unix = p.LightVerifiedUnix,
                     camera_available = p.CameraAvailable,
                     // FLUIDD SLICE 1 FIX: the Worker overlays
                     // nozzle diameters, last-parse fields, and

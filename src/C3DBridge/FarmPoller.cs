@@ -106,10 +106,13 @@ public sealed class FarmPoller
 
     /// <summary>Bridge-known light state for a printer
     /// ("on" / "off" / "unknown"), set only from a lights
-    /// control this bridge actually executed. The Worker
-    /// overlays this onto status pushes so the dashboard
-    /// card stops reading "Not reported" after a proven
-    /// lights execution.</summary>
+    /// control this bridge actually executed AND the printer
+    /// confirmed (lights_report) — a publish the printer
+    /// never confirms never sets this. The Worker overlays
+    /// this onto status pushes so the dashboard card stops
+    /// reading "Not reported" after a proven lights
+    /// execution. The printer-confirmed mode with its age
+    /// also rides on the status push itself (LightVerified).</summary>
     public string LightStateFor(string printerName) =>
         _lightStates.TryGetValue(printerName, out var s) ? s : "unknown";
 
@@ -633,10 +636,16 @@ public sealed class FarmPoller
 
     private static async Task<(bool Ok, string Reason, string Detail)> ExecBambuLightsAsync(BambuAdapter bambu, CancellationToken ct)
     {
-        var (ok, reason) = await bambu.SetChamberLedAsync(true, ct);
-        return ok
-            ? (true, "", "Chamber light turned on (Bambu ledctrl). First-use verification on this model is still owed if this is its first lights execution.")
-            : (false, $"Chamber light call failed: {reason}", "");
+        // GATE-LIGHT BUILD (2026.1105): "on" is claimed only
+        // when the printer confirms it in lights_report. A
+        // publish the printer never confirms is reported as
+        // failed — the control stays pending for retry
+        // instead of the dashboard showing Light: On for a
+        // light that never turned on.
+        var (verified, observed, reason) = await bambu.VerifyChamberLightOnAsync(ct);
+        return verified
+            ? (true, "", "Chamber light turned on (Bambu ledctrl, printer-confirmed in lights_report).")
+            : (false, $"Chamber light not confirmed on: {reason} (last printer-reported mode: '{observed}').", "");
     }
 
     private IPrinterAdapter? ResolveAdapter(FarmJob job)

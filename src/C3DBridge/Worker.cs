@@ -694,6 +694,20 @@ public sealed class Worker
                 now - last < TimeSpan.FromMinutes(1))
                 continue;
             _lastBedSnapshotAttempt[adapter.Name] = now;
+            // GATE-LIGHT BUILD (2026.1105): for Bambu printers,
+            // make sure the chamber light is verified on before
+            // grabbing the frame — a dark frame is not bed
+            // evidence. The ensure is throttled inside the
+            // adapter (at most once per 10 minutes while not
+            // verified on). A failed ensure logs inside the
+            // adapter and the grab still runs, so a dark frame
+            // is visible in the log instead of no frame at all.
+            if (adapter is BambuAdapter bambu)
+            {
+                var lit = await bambu.EnsureChamberLightOnAsync(ct);
+                if (!lit)
+                    Program.Log($"Bed View: chamber light on '{adapter.Name}' is not verified on; grabbing the snapshot anyway (frame may be dark).");
+            }
             byte[]? bytes;
             try { bytes = await adapter.TryGetSnapshotAsync(ct); }
             catch { continue; }

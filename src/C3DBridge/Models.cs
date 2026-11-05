@@ -392,6 +392,16 @@ public sealed record PrinterStatus
     [JsonPropertyName("ams")] public AmsState Ams { get; init; } = new();
     [JsonPropertyName("camera_available")] public bool CameraAvailable { get; init; }
     [JsonPropertyName("light_state")] public string LightState { get; init; } = "unknown";
+    /// <summary>GATE-LIGHT BUILD (2026.1105): the chamber/cavity
+    /// light mode the PRINTER itself last reported
+    /// (lights_report), "on" / "off" / "unknown", with the unix
+    /// time it was observed. Unlike LightState — which records
+    /// only that this bridge once executed a lights control —
+    /// this is printer-confirmed, and its age shows when the
+    /// confirmation is stale. 0 = never observed. Older
+    /// dashboards ignore unknown JSON fields.</summary>
+    [JsonPropertyName("light_verified")] public string LightVerified { get; init; } = "unknown";
+    [JsonPropertyName("light_verified_unix")] public long LightVerifiedUnix { get; init; }
     /// <summary>BRIDGE-READS BUILD: per-toolhead nozzle diameters
     /// in mm, keyed by tool index ("0" = first toolhead,
     /// "1" = second, …), from the printer's own config

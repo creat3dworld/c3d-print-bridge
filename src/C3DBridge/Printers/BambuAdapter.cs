@@ -68,6 +68,23 @@ public sealed class BambuAdapter : IPrinterAdapter
     // printer answer is recorded once per change (and once on the first
     // push) instead of once per status poll.
     private string? _lastPushSummary;
+    // 2026.1105-gate-light: last printer-confirmed chamber-light
+    // mode ("on" / "off") and when it was observed, read from
+    // the push report's lights_report — never from a command
+    // this bridge sent. "unknown" until a report actually
+    // carries lights_report. The pre-snapshot light ensure
+    // below is throttled on these two fields.
+    private string _verifiedLightMode = "unknown";
+    private DateTime _verifiedLightUtc = DateTime.MinValue;
+    private DateTime _lastLightEnsureUtc = DateTime.MinValue;
+    private bool _lastLightEnsureOk;
+    /// <summary>Chamber-light mode the printer itself last
+    /// reported (lights_report): "on" / "off" / "unknown".</summary>
+    public string VerifiedLightMode => _verifiedLightMode;
+    /// <summary>Unix time the verified light mode was last
+    /// observed; 0 = never observed.</summary>
+    public long VerifiedLightUnix => _verifiedLightUtc == DateTime.MinValue
+        ? 0 : new DateTimeOffset(_verifiedLightUtc).ToUnixTimeSeconds();
     // Camera auto-discovery (2275): at most one attempt per
     // adapter instance; see TryAutoDiscoverSnapshotUrlAsync.
     private string? _discoveredSnapshotUrl;
@@ -158,6 +175,19 @@ public sealed class BambuAdapter : IPrinterAdapter
             + (printError != 0 ? $" print_error={printError}" : "")
             + (hmsText.Length > 0 ? $" hms=[{hmsText}]" : "");
         LogPushSummary(pushSummary);
+        // 2026.1105-gate-light: record the printer-confirmed
+        // chamber-light mode from this same fresh report, so
+        // the status push carries the light as the printer
+        // reports it (with its age), not as a command this
+        // bridge once sent. A report without lights_report
+        // leaves the previous observation untouched — its
+        // timestamp then shows how stale it is.
+        var lightMode = ParseLightsReport(root);
+        if (lightMode is not null)
+        {
+            _verifiedLightMode = lightMode;
+            _verifiedLightUtc = DateTime.UtcNow;
+        }
             var state = gcodeState switch
             {
                 "RUNNING" => "printing",
@@ -191,6 +221,10 @@ public sealed class BambuAdapter : IPrinterAdapter
                 Detail = detail,
                 Ams = ParseAms(print),
                 CameraAvailable = _cfg.Camera, // camera_available means the printer HAS a camera, not that a still URL is configured; snapshot fetching still needs SnapshotUrl separately
+                // 2026.1105-gate-light: printer-confirmed light
+                // mode + observation time (see fields above).
+                LightVerified = _verifiedLightMode,
+                LightVerifiedUnix = VerifiedLightUnix,
             };
         }
         catch (Exception ex)
@@ -538,6 +572,117 @@ public sealed class BambuAdapter : IPrinterAdapter
             },
         };
         return PublishCommandAsync(command, ct);
+    }
+
+    /// <summary>GATE-LIGHT BUILD (2026.1105): read the
+    /// chamber-light mode the printer itself reports, from
+    /// the push report's lights_report. Community-documented
+    /// shape (Home Assistant Bambu integration): system.
+    /// lights_report is an array of {node, mode} objects,
+    /// e.g. {node:"chamber_light", mode:"on"}. A plain object
+    /// with a chamber_light property is also accepted, so a
+    /// firmware variant does not silently read as "no
+    /// report". Anything else (missing section, wrong shape,
+    /// any mode other than on/off) is null = unreported,
+    /// never a guess.</summary>
+    private static string? ParseLightsReport(JsonElement root)
+    {
+        try
+        {
+            if (!root.TryGetProperty("system", out var system)) return null;
+            if (!system.TryGetProperty("lights_report", out var report)) return null;
+            if (report.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var entry in report.EnumerateArray())
+                {
+                    if (entry.ValueKind != JsonValueKind.Object) continue;
+                    var node = entry.TryGetProperty("node", out var n) ? n.GetString() ?? "" : "";
+                    if (!string.Equals(node.Trim(), "chamber_light", StringComparison.OrdinalIgnoreCase)) continue;
+                    var mode = entry.TryGetProperty("mode", out var m) ? m.GetString() ?? "" : "";
+                    return NormalizeLightMode(mode);
+                }
+                return null;
+            }
+            if (report.ValueKind == JsonValueKind.Object &&
+                report.TryGetProperty("chamber_light", out var cl))
+            {
+                if (cl.ValueKind == JsonValueKind.String) return NormalizeLightMode(cl.GetString() ?? "");
+                if (cl.ValueKind == JsonValueKind.Object && cl.TryGetProperty("mode", out var cm))
+                    return NormalizeLightMode(cm.GetString() ?? "");
+            }
+            return null;
+        }
+        catch { return null; }
+    }
+
+    private static string? NormalizeLightMode(string mode)
+    {
+        var m = (mode ?? "").Trim().ToLowerInvariant();
+        return m is "on" or "off" ? m : null;
+    }
+
+    /// <summary>GATE-LIGHT BUILD (2026.1105): turn the chamber
+    /// light on AND verify the printer confirms it. A bare
+    /// PublishCommand only proves the MQTT publish reached
+    /// the broker — the old lights control treated that as
+    /// "on", which is why the dashboard showed Light: On
+    /// while the bed snapshots stayed dark. This publishes
+    /// ledctrl chamber_light on, then fetches a fresh pushall
+    /// report and reads lights_report for the chamber_light
+    /// mode. Verified only when the printer itself reports
+    /// mode "on". Logs the publish result and the observed
+    /// mode on every call (calls are infrequent: lights
+    /// controls and throttled pre-snapshot ensures).</summary>
+    public async Task<(bool Verified, string ObservedMode, string Reason)> VerifyChamberLightOnAsync(CancellationToken ct)
+    {
+        var (ok, reason) = await SetChamberLedAsync(true, ct);
+        Program.Log(ok
+            ? $"[Bambu] Chamber light ledctrl publish sent to '{Name}'."
+            : $"[Bambu] Chamber light ledctrl publish to '{Name}' failed: {reason}");
+        if (!ok) return (false, _verifiedLightMode, reason);
+        var report = await FetchReportAsync(ct);
+        if (report is null)
+            return (false, _verifiedLightMode, "Light command sent, but the printer did not answer the verification report request.");
+        try
+        {
+            using var doc = JsonDocument.Parse(report);
+            var mode = ParseLightsReport(doc.RootElement);
+            if (mode is null)
+                return (false, _verifiedLightMode, "Light command sent, but the printer's report carries no lights_report, so the light state is unverified, not on.");
+            _verifiedLightMode = mode;
+            _verifiedLightUtc = DateTime.UtcNow;
+            Program.Log($"[Bambu] Chamber light on '{Name}': printer reports chamber_light mode '{mode}'.");
+            return (string.Equals(mode, "on", StringComparison.OrdinalIgnoreCase), mode, "");
+        }
+        catch (Exception ex)
+        {
+            return (false, _verifiedLightMode, $"Light command sent, but the verification report could not be read: {ex.Message}");
+        }
+    }
+
+    /// <summary>Throttled ensure for bed-view snapshots: make
+    /// sure the chamber light is verified on before a
+    /// snapshot grab, at most once every 10 minutes per
+    /// printer while it is not already verified on. A
+    /// snapshot grab must never wait on a light command that
+    /// keeps failing — a failed ensure logs inside the
+    /// verify call and returns false, and the caller still
+    /// grabs the frame so a dark frame is visible in the log
+    /// instead of no frame at all.</summary>
+    public async Task<bool> EnsureChamberLightOnAsync(CancellationToken ct)
+    {
+        // Already verified on, recently: nothing to do.
+        if (string.Equals(_verifiedLightMode, "on", StringComparison.OrdinalIgnoreCase) &&
+            DateTime.UtcNow - _verifiedLightUtc < TimeSpan.FromMinutes(10))
+            return true;
+        // A failed ensure less than 10 minutes ago: do not
+        // hammer the printer on every snapshot tick.
+        if (DateTime.UtcNow - _lastLightEnsureUtc < TimeSpan.FromMinutes(10) && !_lastLightEnsureOk)
+            return false;
+        _lastLightEnsureUtc = DateTime.UtcNow;
+        var (verified, _, _) = await VerifyChamberLightOnAsync(ct);
+        _lastLightEnsureOk = verified;
+        return verified;
     }
 
     /// <summary>Home all axes via gcode_line G28. Executed
