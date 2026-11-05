@@ -171,10 +171,11 @@ public sealed class FarmPoller
             string.Equals(a.Ip, job.PrinterIp, StringComparison.OrdinalIgnoreCase));
         if (adapter is null)
         {
-            LogHold(job.JobId, "no-printer",
-                $"[farm] Job {job.JobId} dispatch=start, but no printer '{job.Printer}' / {job.PrinterIp} is configured on this bridge. No substitution, job left queued.");
+            await ReportHoldAsync(job.JobId, "no-printer",
+                $"[farm] Job {job.JobId} dispatch=start, but no printer '{job.Printer}' / {job.PrinterIp} is configured on this bridge. No substitution, job left queued.", ct);
             return;
         }
+        ClearHold(job.JobId, "no-printer");
         if (!statuses.TryGetValue(adapter.Name, out var live) ||
             !string.Equals(live.State, "idle", StringComparison.OrdinalIgnoreCase))
         {
@@ -183,10 +184,11 @@ public sealed class FarmPoller
         }
         if (!job.BedConfirmed || !job.AmsConfirmed)
         {
-            LogHold(job.JobId, "gates",
-                $"[farm] Job {job.JobId} dispatch=start, but dashboard safety flags are not both confirmed (bed={job.BedConfirmed}, ams={job.AmsConfirmed}). Job left queued; bridge never starts on an unconfirmed gate.");
+            await ReportHoldAsync(job.JobId, "gates",
+                $"[farm] Job {job.JobId} dispatch=start, but dashboard safety flags are not both confirmed (bed={job.BedConfirmed}, ams={job.AmsConfirmed}). Job left queued; bridge never starts on an unconfirmed gate.", ct);
             return;
         }
+        ClearHold(job.JobId, "gates");
         // Live AMS contradiction check (mirror of Safety):
         // only when the printer actually reports AMS data.
         // A name-vs-hex color pair is incomparable, not a
@@ -196,34 +198,38 @@ public sealed class FarmPoller
             if (!string.IsNullOrWhiteSpace(job.Material) && !string.IsNullOrWhiteSpace(live.Ams.Material) &&
                 !string.Equals(job.Material.Trim(), live.Ams.Material.Trim(), StringComparison.OrdinalIgnoreCase))
             {
-                LogHold(job.JobId, "ams-material",
-                    $"[farm] Job {job.JobId}: live AMS material changed since dispatch (printer reports '{live.Ams.Material}', job needs '{job.Material}'). Job left queued.");
+                await ReportHoldAsync(job.JobId, "ams-material",
+                    $"[farm] Job {job.JobId}: live AMS material changed since dispatch (printer reports '{live.Ams.Material}', job needs '{job.Material}'). Job left queued.", ct);
                 return;
             }
             if (!string.IsNullOrWhiteSpace(job.Color) && !string.IsNullOrWhiteSpace(live.Ams.Color) &&
                 Safety.ColorsContradict(job.Color, live.Ams.Color))
             {
-                LogHold(job.JobId, "ams-color",
-                    $"[farm] Job {job.JobId}: live AMS color changed since dispatch (printer reports '{live.Ams.Color}', job needs '{job.Color}'). Job left queued.");
+                await ReportHoldAsync(job.JobId, "ams-color",
+                    $"[farm] Job {job.JobId}: live AMS color changed since dispatch (printer reports '{live.Ams.Color}', job needs '{job.Color}'). Job left queued.", ct);
                 return;
             }
         }
+        ClearHold(job.JobId, "ams-material");
+        ClearHold(job.JobId, "ams-color");
         // File gates: a missing, unsliced, or wrong-kind
         // file is a hold with a reason, never a failed
         // print — the operator fixes the file and the next
         // poll picks the job up.
         if (job.FileMissing || string.IsNullOrWhiteSpace(job.FileUrl))
         {
-            LogHold(job.JobId, "no-file",
-                $"[farm] Job {job.JobId} ('{job.Title}') is dispatched and its printer is idle, but the farm job carries no print file yet. Job left queued; never guessed.");
+            await ReportHoldAsync(job.JobId, "no-file",
+                $"[farm] Job {job.JobId} ('{job.Title}') is dispatched and its printer is idle, but the farm job carries no print file yet. Job left queued; never guessed.", ct);
             return;
         }
+        ClearHold(job.JobId, "no-file");
         if (job.FileNeedsSlicing || !string.Equals(job.FileKind, "sliced", StringComparison.OrdinalIgnoreCase))
         {
-            LogHold(job.JobId, "unsliced",
-                $"[farm] Job {job.JobId} ('{job.Title}') carries an unsliced file (kind '{job.FileKind}'). Slice it for the target printer first; job left queued.");
+            await ReportHoldAsync(job.JobId, "unsliced",
+                $"[farm] Job {job.JobId} ('{job.Title}') carries an unsliced file (kind '{job.FileKind}'). Slice it for the target printer first; job left queued.", ct);
             return;
         }
+        ClearHold(job.JobId, "unsliced");
         var fileName = SanitizeFileName(job.FileName ?? "");
         if (string.IsNullOrWhiteSpace(fileName))
             fileName = job.JobId + ".gcode";
@@ -256,10 +262,11 @@ public sealed class FarmPoller
             // Defense in depth: even a "sliced" record must
             // name a G-code file. A 3MF here is refused —
             // Moonraker print/start cannot print it.
-            LogHold(job.JobId, "not-gcode",
-                $"[farm] Job {job.JobId} ('{job.Title}') resolves to '{fileName}', not a G-code file. A 3MF is never uploaded as a print file; job left queued.");
+            await ReportHoldAsync(job.JobId, "not-gcode",
+                $"[farm] Job {job.JobId} ('{job.Title}') resolves to '{fileName}', not a G-code file. A 3MF is never uploaded as a print file; job left queued.", ct);
             return;
         }
+        ClearHold(job.JobId, "not-gcode");
         // Sliced-for gate (mirror of the dashboard rule):
         // normalize both sides the same way (lowercase,
         // strip brand words, strip non-alphanumerics); a
@@ -269,10 +276,11 @@ public sealed class FarmPoller
         if (sfModel != "" && printerModel != "" &&
             !printerModel.Contains(sfModel) && !sfModel.Contains(printerModel))
         {
-            LogHold(job.JobId, "sliced-for",
-                $"[farm] Job {job.JobId} ('{job.Title}') was sliced for '{job.SlicedFor}', but the target printer is '{adapter.Name}'. A sliced file is only sent to a matching printer; job left queued.");
+            await ReportHoldAsync(job.JobId, "sliced-for",
+                $"[farm] Job {job.JobId} ('{job.Title}') was sliced for '{job.SlicedFor}', but the target printer is '{adapter.Name}'. A sliced file is only sent to a matching printer; job left queued.", ct);
             return;
         }
+        ClearHold(job.JobId, "sliced-for");
 
         // Carry the job out: download (verified) → upload → start.
         var tempPath = Path.Combine(Config.TempDir, job.JobId + "_" + fileName);
@@ -282,11 +290,12 @@ public sealed class FarmPoller
             // Transient (network/dashboard): leave queued
             // and retry on a later poll, never report a
             // failed print for a download problem.
-            LogHold(job.JobId, "download",
-                $"[farm] Job {job.JobId} file download failed ({dlReason}). Job left queued for retry.");
+            await ReportHoldAsync(job.JobId, "download",
+                $"[farm] Job {job.JobId} file download failed ({dlReason}). Job left queued for retry.", ct);
             Cleanup(tempPath);
             return;
         }
+        ClearHold(job.JobId, "download");
         // BRIDGE-READS BUILD: streaming parse of the verified
         // download, BEFORE upload. The parse never alters the
         // file and never starts a print. Parse failure is a
@@ -315,12 +324,13 @@ public sealed class FarmPoller
             }
             if (!decl.ParseOk)
             {
-                LogHold(job.JobId, "file-unreadable",
-                    $"[farm] Job {job.JobId} ('{job.Title}') file downloaded and SHA-verified, but the G-code could not be read ({decl.ParseError}). Job left queued; never guessed.");
+                await ReportHoldAsync(job.JobId, "file-unreadable",
+                    $"[farm] Job {job.JobId} ('{job.Title}') file downloaded and SHA-verified, but the G-code could not be read ({decl.ParseError}). Job left queued; never guessed.", ct);
                 Cleanup(tempPath);
                 return;
             }
         }
+        ClearHold(job.JobId, "file-unreadable");
         // GATE MIRROR (same hold pattern as the live AMS-color
         // hold): parsed declared tool known AND printer-side
         // tool known AND they differ -> hold with reason.
@@ -335,11 +345,12 @@ public sealed class FarmPoller
         var slotIdx = GcodeFileParser.SlotToToolIndex(job.AmsSlot);
         if (declaredIdx is not null && slotIdx is not null && declaredIdx.Value != slotIdx.Value)
         {
-            LogHold(job.JobId, "file-tool",
-                $"[farm] Job {job.JobId} ('{job.Title}') file declares tool T{declaredIdx.Value}, but the job's slot maps to tool T{slotIdx.Value}. A file is never sent to a mismatched tool; re-slice for the loaded tool or correct the slot. Job left queued.");
+            await ReportHoldAsync(job.JobId, "file-tool",
+                $"[farm] Job {job.JobId} ('{job.Title}') file declares tool T{declaredIdx.Value}, but the job's slot maps to tool T{slotIdx.Value}. A file is never sent to a mismatched tool; re-slice for the loaded tool or correct the slot. Job left queued.", ct);
             Cleanup(tempPath);
             return;
         }
+        ClearHold(job.JobId, "file-tool");
         var (upOk, upReason) = await adapter.UploadFileAsync(tempPath, fileName, ct);
         if (!upOk)
         {
@@ -613,11 +624,38 @@ public sealed class FarmPoller
         return adapter;
     }
 
-    private void LogHold(string jobId, string key, string message)
+    /// <summary>Log a start refusal locally, once per hold key
+    /// per bridge run. Returns true only when the key is newly
+    /// added (i.e. this is the first log for it).</summary>
+    private bool LogHold(string jobId, string key, string message)
     {
         if (_loggedHold.Add(jobId + ":" + key))
+        {
             Program.Log(message);
+            return true;
+        }
+        return false;
     }
+
+    /// <summary>Log a start refusal locally AND report it to
+    /// the dashboard as status "held" with the same reason,
+    /// once per hold key per bridge run (mirrors LogHold's
+    /// dedup). The dashboard shows "Held: &lt;reason&gt;" on
+    /// the job and leaves it queued; the bridge retries on its
+    /// next poll once the problem is cleared. Returns true
+    /// when this is the first report for the key.</summary>
+    private async Task<bool> ReportHoldAsync(string jobId, string key, string message, CancellationToken ct)
+    {
+        if (!LogHold(jobId, key, message))
+            return false;
+        await _dashboard.ReportFarmJobAsync(jobId, "held", message, null, ct);
+        return true;
+    }
+
+    /// <summary>Clear one hold key for a job, so a re-occurring
+    /// hold reports again. Called as each gate passes: reaching
+    /// a gate means the hold condition behind it has cleared.</summary>
+    private void ClearHold(string jobId, string key) => _loggedHold.Remove(jobId + ":" + key);
 
     /// <summary>Dashboard norm_printer_model, mirrored
     /// exactly: lowercase, strip brand words, strip

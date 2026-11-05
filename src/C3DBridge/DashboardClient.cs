@@ -306,10 +306,13 @@ public sealed class DashboardClient : IDisposable
 
     /// <summary>Farm build: report a farm job outcome to POST
     /// farm/job-report. Status is started / paused / finished /
-    /// failed, per the dashboard route. Used only once a farm
-    /// job actually starts or fails on a printer — never for
-    /// a missing-file dispatch, which is logged locally and
-    /// left queued instead (see FarmPoller).</summary>
+    /// failed / held, per the dashboard route. Started / failed
+    /// are used only once a farm job actually starts or fails
+    /// on a printer. Held is used when the bridge refuses a
+    /// start dispatch (see FarmPoller.ReportHoldAsync): the
+    /// dashboard shows "Held: &lt;reason&gt;" on the job and
+    /// leaves it queued, so the bridge retries on its next
+    /// poll once the problem is cleared.</summary>
     public async Task<bool> ReportFarmJobAsync(string jobId, string status, string reason, double? filamentUsedG, CancellationToken ct)
     {
         var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/job-report",
