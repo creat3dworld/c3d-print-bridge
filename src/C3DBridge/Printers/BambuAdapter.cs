@@ -570,6 +570,15 @@ public sealed class BambuAdapter : IPrinterAdapter
 
     public Task<(bool Ok, string Reason)> SetChamberLedAsync(bool on, CancellationToken ct)
     {
+        // LEDCTRL-FIX (2026.1105): full community-documented
+        // ledctrl form (Home Assistant X1/X1C MQTT thread,
+        // Jan 2023, verbatim printer traffic; inferno2minus
+        // bambulab.py gist). The earlier minimal form sent
+        // only node + mode — a subset the printer may
+        // ignore; the documented form carries the four
+        // timing fields too. user_id "seems to not matter"
+        // per the thread; the documented value is used so
+        // the payload matches the proven form exactly.
         var command = new
         {
             system = new
@@ -578,50 +587,83 @@ public sealed class BambuAdapter : IPrinterAdapter
                 command = "ledctrl",
                 led_node = "chamber_light",
                 led_mode = on ? "on" : "off",
+                led_on_time = 500,
+                led_off_time = 500,
+                loop_times = 0,
+                interval_time = 0,
             },
+            user_id = "123456789",
         };
         return PublishCommandAsync(command, ct);
     }
 
     /// <summary>GATE-LIGHT BUILD (2026.1105): read the
     /// chamber-light mode the printer itself reports, from
-    /// the push report's lights_report. Community-documented
-    /// shape (Home Assistant Bambu integration): system.
-    /// lights_report is an array of {node, mode} objects,
-    /// e.g. {node:"chamber_light", mode:"on"}. A plain object
-    /// with a chamber_light property is also accepted, so a
+    /// the push report's lights_report. CORRECTED 2026.1105:
+    /// lights_report lives under PRINT, not system —
+    /// verbatim printer report (HA X1/X1C MQTT thread):
+    /// {"print":{...,"lights_report":[{"node":
+    /// "chamber_light","mode":"on"}],...}}. The original
+    /// system-only read missed it entirely, which is why
+    /// the 2026.1105 diagnosis ("system: present,
+    /// lights_report: absent") could never confirm the
+    /// light even if the printer was reporting it. Print
+    /// is read first; system is kept as a fallback for
+    /// firmware variants that report it there. Shape:
+    /// array of {node, mode} objects. A plain object with
+    /// a chamber_light property is also accepted, so a
     /// firmware variant does not silently read as "no
-    /// report". Anything else (missing section, wrong shape,
-    /// any mode other than on/off) is null = unreported,
-    /// never a guess.</summary>
+    /// report". Anything else (missing sections, wrong
+    /// shape, any mode other than on/off) is null =
+    /// unreported, never a guess.</summary>
     /// <summary>DIAG BUILD (2026.1105): one-line description
     /// of what a fresh report actually carries for
     /// lights_report, so a failed verification leaves
-    /// evidence instead of silence. Distinguishes "no system
-    /// section", "no lights_report", and "present but
-    /// unparsable/wrong shape", and shows the raw value
-    /// truncated to 200 chars — never a whole report.</summary>
+    /// evidence instead of silence. Describes BOTH the
+    /// print and system sections, so one log line settles
+    /// whether the field is under print, under system, or
+    /// nowhere; shows the raw value truncated to 200 chars
+    /// — never a whole report.</summary>
     private static string DescribeLightsReport(JsonElement root)
     {
         try
         {
-            if (!root.TryGetProperty("system", out var system)) return "system: absent";
-            if (!system.TryGetProperty("lights_report", out var report)) return "system: present, lights_report: absent";
-            var raw = report.GetRawText();
-            if (raw.Length > 200) raw = raw.Substring(0, 200) + "…";
-            var kind = report.ValueKind.ToString().ToLowerInvariant();
-            var extra = report.ValueKind == JsonValueKind.Array ? $" len={report.GetArrayLength()}" : "";
-            return $"lights_report: {kind}{extra} raw={raw}";
+            var printDesc = DescribeSectionLightsReport(root, "print");
+            var systemDesc = DescribeSectionLightsReport(root, "system");
+            return $"print: {printDesc}; system: {systemDesc}";
         }
         catch { return "lights_report: unreadable"; }
+    }
+
+    private static string DescribeSectionLightsReport(JsonElement root, string section)
+    {
+        if (!root.TryGetProperty(section, out var sec)) return $"{section}: absent";
+        if (!sec.TryGetProperty("lights_report", out var report)) return $"{section}: present, lights_report: absent";
+        var raw = report.GetRawText();
+        if (raw.Length > 200) raw = raw.Substring(0, 200) + "…";
+        var kind = report.ValueKind.ToString().ToLowerInvariant();
+        var extra = report.ValueKind == JsonValueKind.Array ? $" len={report.GetArrayLength()}" : "";
+        return $"lights_report: {kind}{extra} raw={raw}";
     }
 
     private static string? ParseLightsReport(JsonElement root)
     {
         try
         {
-            if (!root.TryGetProperty("system", out var system)) return null;
-            if (!system.TryGetProperty("lights_report", out var report)) return null;
+            // lights_report is reported under PRINT (see
+            // doc comment above); system is a fallback only.
+            return ParseSectionLightsReport(root, "print")
+                ?? ParseSectionLightsReport(root, "system");
+        }
+        catch { return null; }
+    }
+
+    private static string? ParseSectionLightsReport(JsonElement root, string section)
+    {
+        try
+        {
+            if (!root.TryGetProperty(section, out var sec)) return null;
+            if (!sec.TryGetProperty("lights_report", out var report)) return null;
             if (report.ValueKind == JsonValueKind.Array)
             {
                 foreach (var entry in report.EnumerateArray())
