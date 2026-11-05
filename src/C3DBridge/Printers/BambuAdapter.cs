@@ -361,25 +361,31 @@ public sealed class BambuAdapter : IPrinterAdapter
     {
         var (ok, reason) = CheckIdentity();
         if (!ok) return (false, reason);
+        // Repair dashboard-mangled plate filenames: the dashboard sanitizes
+        // ".gcode.3mf" to ".gcode_.3mf", which Bambu printers reject.
+        var uploadFileName = fileName;
+        if (fileName.EndsWith(".gcode_.3mf", StringComparison.OrdinalIgnoreCase))
+        {
+            uploadFileName = fileName.Substring(0, fileName.Length - ".gcode_.3mf".Length) + ".gcode.3mf";
+            Program.Log($"[Bambu] Repaired mangled plate filename '{fileName}' -> '{uploadFileName}' for upload");
+        }
         try
         {
-            // Primary path: curl reuses the control channel's TLS session
+            // Primary path: curl reuses the control channel TLS session
             // for the data channel, which Bambu printers on current
             // firmware require (proven live Nov 3, 2026: 90MB via curl
             // succeeded where the built-in uploader failed).
-            var curl = await CurlFtps.UploadAsync(_cfg.Ip, "bblp", _cfg.AccessCode!,
-                localPath, "/cache/" + fileName, ct);
+            var curl = await CurlFtps.UploadAsync(_cfg.Ip, "bblp", _cfg.AccessCode!, localPath, "/cache/" + uploadFileName, ct);
             if (curl.CurlMissing)
             {
-                // curl.exe not present on this machine: fall back to the
-                // built-in uploader rather than failing outright.
-                var implicitResult = await ImplicitFtps.UploadAsync(_cfg.Ip, 990, "bblp", _cfg.AccessCode!,
-                    localPath, "/cache/" + fileName, ct);
-        Program.Log($"[Bambu] Uploaded '{fileName}' to '/cache/{fileName}' ({new System.IO.FileInfo(localPath).Length} bytes)");
-        return implicitResult;
+                // curl.exe not present (or it failed to start) - fall back to
+                // the built-in uploader, which previously failed on large files.
+                var implicitResult = await ImplicitFtps.UploadAsync(_cfg.Ip, 990, "bblp", _cfg.AccessCode!, localPath, "/cache/" + uploadFileName, ct);
+                Program.Log($"[Bambu] Uploaded '{uploadFileName}' to '/cache/{uploadFileName}' ({new System.IO.FileInfo(localPath).Length} bytes)");
+                return implicitResult;
             }
             if (!curl.Ok) return (false, $"FTPS upload to printer '{Name}' failed: {curl.Reason}");
-        Program.Log($"[Bambu] Uploaded '{fileName}' to '/cache/{fileName}' ({new System.IO.FileInfo(localPath).Length} bytes)");
+            Program.Log($"[Bambu] Uploaded '{uploadFileName}' to '/cache/{uploadFileName}' ({new System.IO.FileInfo(localPath).Length} bytes)");
             return (true, "");
         }
         catch (Exception ex)
@@ -387,22 +393,29 @@ public sealed class BambuAdapter : IPrinterAdapter
             return (false, $"FTPS upload to printer '{Name}' failed: {ex.Message}");
         }
     }
-
     public async Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct)
     {
+        // Repair dashboard-mangled plate filenames: the dashboard sanitizes
+        // ".gcode.3mf" to ".gcode_.3mf", which Bambu printers reject.
+        var startFileName = fileName;
+        if (fileName.EndsWith(".gcode_.3mf", StringComparison.OrdinalIgnoreCase))
+        {
+            startFileName = fileName.Substring(0, fileName.Length - ".gcode_.3mf".Length) + ".gcode.3mf";
+            Program.Log($"[Bambu] Repaired mangled plate filename '{fileName}' -> '{startFileName}' for start");
+        }
         // Community-documented start shape; the Worker verifies via
         // status polls that printing actually began, and fails the
         // job if it did not within two minutes.
-        var isPlateFile = fileName.EndsWith(".gcode.3mf", StringComparison.OrdinalIgnoreCase) || fileName.EndsWith(".3mf", StringComparison.OrdinalIgnoreCase);
-        var startParam = isPlateFile ? "Metadata/plate_1.gcode" : fileName;
+        var isPlateFile = startFileName.EndsWith(".gcode.3mf", StringComparison.OrdinalIgnoreCase) || startFileName.EndsWith(".3mf", StringComparison.OrdinalIgnoreCase);
+        var startParam = isPlateFile ? "Metadata/plate_1.gcode" : startFileName;
         var command = new
         {
             print = new
             {
                 sequence_id = "1",
                 command = "project_file",
-                param = startParam, url = "file:///sdcard/cache/" + fileName, file = fileName, md5 = "", bed_type = "auto", use_ams = true, ams_mapping = new[] { 0, -1, -1, -1, -1 }, ams_mapping2 = new[] { new { ams_id = 0, slot_id = 0 } }, timelapse = false, bed_leveling = true, flow_cali = false, vibration_cali = false, layer_inspect = false,
-                subtask_name = fileName,
+                                param = startParam, url = "file:///sdcard/cache/" + startFileName, file = startFileName, md5 = "", bed_type = "auto", use_ams = true, ams_mapping = new[] { 0, -1, -1, -1, -1 }, ams_mapping2 = new[] { new { ams_id = 0, slot_id = 0 } }, timelapse = false, bed_leveling = true, flow_cali = false, vibration_cali = false, layer_inspect = false,
+                subtask_name = startFileName,
                 project_id = "0", task_id = "0", subtask_id = "0",
             },
         };
