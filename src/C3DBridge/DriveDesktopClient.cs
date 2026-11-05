@@ -119,6 +119,110 @@ public static class DriveDesktopClient
         return null;
     }
 
+    /// <summary>The local "My Drive" sync root for this PC:
+    /// the operator-configured drive_sync_root when set,
+    /// else the mounted virtual drive (matched on its volume
+    /// label, not its letter) + "My Drive". Null when Drive
+    /// for Desktop is not mounted here — callers treat that
+    /// as "no local copy", never an error.</summary>
+    public static string? ResolveSyncRoot(BridgeConfig config)
+    {
+        try
+        {
+            var configured = (config.DriveSyncRoot ?? "").Trim();
+            if (!string.IsNullOrWhiteSpace(configured)) return configured;
+            var letter = VirtualDriveLetter();
+            if (letter is null) return null;
+            return Path.Combine(letter, "My Drive");
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Google Drive for Desktop fallback read
+    /// (2026.1105): try the local sync copy of a farm-job
+    /// file when the dashboard download failed. Sliced files
+    /// (.gcode/.gco/.gcode.3mf plates) come from the Sliced
+    /// G-code files folder; model (.3mf) files from the 3MF
+    /// files folder; any other name has no local copy. The
+    /// primary name is tried first, then the alternate name
+    /// (the pre-repair dashboard name, when it differs — the
+    /// WordPress dedup suffix never survives into Drive).
+    /// A found copy is streamed to destPath and SHA-256
+    /// checked exactly like a dashboard download (no hash
+    /// on the job = no check); a mismatch deletes the copy
+    /// and tries the next name, never a stale file. Nothing
+    /// is uploaded, nothing is modified in Drive, and a
+    /// missing drive, a missing file, or a failed copy all
+    /// report (false, reason) so the caller keeps its
+    /// existing download-hold behavior. File names only are
+    /// logged, never file contents.</summary>
+    public static async Task<(bool Ok, string Reason)> TryUseLocalCopyAsync(
+        string fileName, string? alternateFileName, string expectedSha256, string destPath,
+        BridgeConfig config, CancellationToken ct = default)
+    {
+        var root = ResolveSyncRoot(config);
+        if (root is null)
+            return (false, "Drive for Desktop is not mounted on this PC.");
+        var lower = (fileName ?? "").Trim().ToLowerInvariant();
+        string folder;
+        if (lower.EndsWith(".gcode.3mf", StringComparison.Ordinal) || lower.EndsWith(".gcode", StringComparison.Ordinal) || lower.EndsWith(".gco", StringComparison.Ordinal))
+            folder = (config.DriveSlicedFolder ?? "").Trim();
+        else if (lower.EndsWith(".3mf", StringComparison.Ordinal))
+            folder = (config.Drive3mfFolder ?? "").Trim();
+        else
+            return (false, $"No local Drive copy is kept for '{fileName}'.");
+        if (string.IsNullOrWhiteSpace(folder))
+            return (false, "The local Drive folder name is not configured.");
+        string? lastReason = null;
+        foreach (var candidate in new[] { fileName, alternateFileName })
+        {
+            if (string.IsNullOrWhiteSpace(candidate)) continue;
+            // Defense in depth: a name with a directory part
+            // is never trusted — the caller already sanitizes,
+            // but a traversal must not reach Path.Combine.
+            var safe = Path.GetFileName(candidate.Trim());
+            if (string.IsNullOrWhiteSpace(safe) || !string.Equals(safe, candidate.Trim(), StringComparison.Ordinal)) continue;
+            var source = Path.Combine(root, folder, safe);
+            bool exists;
+            try { exists = File.Exists(source); } catch { continue; }
+            if (!exists) continue;
+            try
+            {
+                // The download path creates this only after a
+                // successful HTTP response, so a failed download
+                // may have left the temp folder unmade.
+                Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
+                await using (var input = File.OpenRead(source))
+                await using (var output = File.Create(destPath))
+                {
+                    await input.CopyToAsync(output, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                try { if (File.Exists(destPath)) File.Delete(destPath); } catch { }
+                lastReason = $"Local Drive copy '{safe}' could not be read: {ex.Message}";
+                continue;
+            }
+            if (!string.IsNullOrWhiteSpace(expectedSha256))
+            {
+                using var sha = System.Security.Cryptography.SHA256.Create();
+                await using var fs = File.OpenRead(destPath);
+                var hash = Convert.ToHexString(await sha.ComputeHashAsync(fs, ct)).ToLowerInvariant();
+                if (!string.Equals(hash, expectedSha256.Trim().ToLowerInvariant(), StringComparison.Ordinal))
+                {
+                    try { File.Delete(destPath); } catch { }
+                    Program.Log($"[farm] Local Drive copy '{safe}' failed its SHA-256 check; the copy was discarded, not printed.");
+                    lastReason = $"Local Drive copy '{safe}' failed its SHA-256 check; the copy was discarded, not printed.";
+                    continue;
+                }
+            }
+            Program.Log($"[farm] Local Drive for Desktop copy used for '{safe}'.");
+            return (true, "");
+        }
+        return (false, lastReason ?? $"No local Drive copy of '{fileName}' was found.");
+    }
+
     /// <summary>Download Google's official installer into the
     /// bridge temp folder and return the local path, or null
     /// with a reason. Runs on a worker thread by callers so

@@ -191,6 +191,26 @@ public sealed record BridgeConfig
     /// installs from the downloaded file, so the operator no
     /// longer has to download and pick a file by hand.</summary>
     [JsonPropertyName("action1_download_url")] public string? Action1DownloadUrl { get; init; }
+    /// <summary>Google Drive for Desktop fallback read
+    /// (2026.1105). Local root of the Drive for Desktop sync
+    /// (the "My Drive" folder on the mounted virtual drive).
+    /// Blank = auto-detect from the mounted virtual drive's
+    /// volume label (DriveDesktopClient.VirtualDriveLetter)
+    /// + "My Drive". Set this only when the virtual drive
+    /// letter or the sync folder was moved. Never a URL,
+    /// never a credential — a local path only, and it lives
+    /// only in bridge-config.json on the PC.</summary>
+    [JsonPropertyName("drive_sync_root")] public string? DriveSyncRoot { get; init; }
+    /// <summary>Folder under the Drive sync root holding model
+    /// (.3mf) files, as created on the dashboard's Drive
+    /// files tab. Default "3MF files".</summary>
+    [JsonPropertyName("drive_3mf_folder")] public string Drive3mfFolder { get; init; } = "3MF files";
+    /// <summary>Folder under the Drive sync root holding sliced
+    /// G-code files (.gcode/.gco/.gcode.3mf plates), as
+    /// created on the dashboard's Drive files tab. Default
+    /// "Sliced G-code files". Farm jobs fall back to this
+    /// folder when the dashboard file download fails.</summary>
+    [JsonPropertyName("drive_sliced_folder")] public string DriveSlicedFolder { get; init; } = "Sliced G-code files";
     [JsonPropertyName("printers")] public List<PrinterConfig> Printers { get; init; } = new();
 }
 

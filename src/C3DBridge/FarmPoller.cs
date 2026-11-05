@@ -233,6 +233,11 @@ public sealed class FarmPoller
         var fileName = SanitizeFileName(job.FileName ?? "");
         if (string.IsNullOrWhiteSpace(fileName))
             fileName = job.JobId + ".gcode";
+        // The pre-repair name, for the Drive fallback below:
+        // the WordPress dedup suffix never survives into the
+        // local Drive folders, but the file may have been
+        // uploaded there under either spelling.
+        var originalFileName = fileName;
         // WordPress/Media dedup renames a stored Bambu plate to
         // ".gcode-<digits>.3mf" (and defensively ".gcode_<digits>.3mf");
         // repair it to the canonical ".gcode.3mf" before the plate
@@ -287,13 +292,31 @@ public sealed class FarmPoller
         var (dlOk, dlReason) = await _dashboard.DownloadFileAsync(job.FileUrl, tempPath, job.FileSha256, ct);
         if (!dlOk)
         {
-            // Transient (network/dashboard): leave queued
-            // and retry on a later poll, never report a
-            // failed print for a download problem.
-            await ReportHoldAsync(job.JobId, "download",
-                $"[farm] Job {job.JobId} file download failed ({dlReason}). Job left queued for retry.", ct);
-            Cleanup(tempPath);
-            return;
+            // G: FALLBACK (2026.1105): the dashboard download
+            // failed — try the local Drive for Desktop sync
+            // copy before holding the job. A found copy is
+            // streamed to the same temp path and SHA-checked
+            // exactly like a download; the job then carries on
+            // below as if the download had succeeded. No local
+            // copy (or a bad one) keeps the existing download
+            // hold: leave queued and retry on a later poll,
+            // never report a failed print for a file problem.
+            var (localOk, _) = await DriveDesktopClient.TryUseLocalCopyAsync(
+                fileName, originalFileName, job.FileSha256, tempPath, _config, ct);
+            if (localOk)
+            {
+                Program.Log($"[farm] Job {job.JobId} file download failed ({dlReason}); used the local Drive for Desktop copy instead.");
+            }
+            else
+            {
+                // Transient (network/dashboard): leave queued
+                // and retry on a later poll, never report a
+                // failed print for a download problem.
+                await ReportHoldAsync(job.JobId, "download",
+                    $"[farm] Job {job.JobId} file download failed ({dlReason}). Job left queued for retry.", ct);
+                Cleanup(tempPath);
+                return;
+            }
         }
         ClearHold(job.JobId, "download");
         // BRIDGE-READS BUILD: streaming parse of the verified
