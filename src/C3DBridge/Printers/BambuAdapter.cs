@@ -373,10 +373,13 @@ public sealed class BambuAdapter : IPrinterAdapter
             {
                 // curl.exe not present on this machine: fall back to the
                 // built-in uploader rather than failing outright.
-                return await ImplicitFtps.UploadAsync(_cfg.Ip, 990, "bblp", _cfg.AccessCode!,
+                var implicitResult = await ImplicitFtps.UploadAsync(_cfg.Ip, 990, "bblp", _cfg.AccessCode!,
                     localPath, "/cache/" + fileName, ct);
+        Program.Log($"[Bambu] Uploaded '{fileName}' to '/cache/{fileName}' ({new System.IO.FileInfo(localPath).Length} bytes)");
+        return implicitResult;
             }
             if (!curl.Ok) return (false, $"FTPS upload to printer '{Name}' failed: {curl.Reason}");
+        Program.Log($"[Bambu] Uploaded '{fileName}' to '/cache/{fileName}' ({new System.IO.FileInfo(localPath).Length} bytes)");
             return (true, "");
         }
         catch (Exception ex)
@@ -385,23 +388,28 @@ public sealed class BambuAdapter : IPrinterAdapter
         }
     }
 
-    public Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct)
+    public async Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct)
     {
         // Community-documented start shape; the Worker verifies via
         // status polls that printing actually began, and fails the
         // job if it did not within two minutes.
+        var isPlateFile = fileName.EndsWith(".gcode.3mf", StringComparison.OrdinalIgnoreCase) || fileName.EndsWith(".3mf", StringComparison.OrdinalIgnoreCase);
+        var startParam = isPlateFile ? "Metadata/plate_1.gcode" : fileName;
         var command = new
         {
             print = new
             {
                 sequence_id = "1",
                 command = "project_file",
-                param = "Metadata/plate_1.gcode", url = "file:///sdcard/cache/" + fileName, file = fileName, md5 = "", bed_type = "auto", use_ams = true, ams_mapping = new[] { 0, -1, -1, -1, -1 }, ams_mapping2 = new[] { new { ams_id = 0, slot_id = 0 } }, timelapse = false, bed_leveling = true, flow_cali = false, vibration_cali = false, layer_inspect = false,
+                param = startParam, url = "file:///sdcard/cache/" + fileName, file = fileName, md5 = "", bed_type = "auto", use_ams = true, ams_mapping = new[] { 0, -1, -1, -1, -1 }, ams_mapping2 = new[] { new { ams_id = 0, slot_id = 0 } }, timelapse = false, bed_leveling = true, flow_cali = false, vibration_cali = false, layer_inspect = false,
                 subtask_name = fileName,
                 project_id = "0", task_id = "0", subtask_id = "0",
             },
         };
-        return PublishCommandAsync(command, ct);
+        Program.Log($"[Bambu] StartPrint payload: {JsonSerializer.Serialize(command)}");
+        var startResult = await PublishCommandAsync(command, ct);
+        Program.Log($"[Bambu] StartPrint publish result: ok={startResult.Ok} reason={startResult.Reason}");
+        return startResult;
     }
 
     /// <summary>AUTO-START BUILD — pause / cancel / chamber
