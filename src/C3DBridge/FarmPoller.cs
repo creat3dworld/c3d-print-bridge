@@ -227,6 +227,21 @@ public sealed class FarmPoller
         var fileName = SanitizeFileName(job.FileName ?? "");
         if (string.IsNullOrWhiteSpace(fileName))
             fileName = job.JobId + ".gcode";
+        // WordPress/Media dedup renames a stored Bambu plate to
+        // ".gcode-<digits>.3mf" (and defensively ".gcode_<digits>.3mf");
+        // repair it to the canonical ".gcode.3mf" before the plate
+        // gate, so the job is not refused as "not a G-code file". The
+        // repaired name is then used for the temp file, the FTPS
+        // destination, the StartPrint URL, and file/subtask_name.
+        if (adapter is BambuAdapter)
+        {
+            var repairedFileName = BambuAdapter.RepairPlateFileName(fileName);
+            if (!string.Equals(repairedFileName, fileName, StringComparison.Ordinal))
+            {
+                Program.Log($"[farm] Plate filename repaired '{fileName}' -> '{repairedFileName}' for job {job.JobId}.");
+                fileName = repairedFileName;
+            }
+        }
         var ext = Path.GetExtension(fileName).ToLowerInvariant();
         // 2026.1102.2214-send-fallback — Bambu plates: a
         // .gcode.3mf plate is the Bambu-native sliced file

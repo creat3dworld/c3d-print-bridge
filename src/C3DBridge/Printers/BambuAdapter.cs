@@ -54,6 +54,7 @@ using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using MQTTnet;
 using MQTTnet.Client;
 
@@ -357,18 +358,34 @@ public sealed class BambuAdapter : IPrinterAdapter
         }
     }
 
+    // Plate-filename repair (follow-up to 9d04e61): the dashboard
+    // sanitizes ".gcode.3mf" to ".gcode_.3mf", and WordPress / Media
+    // dedup renames a stored plate to ".gcode-<digits>.3mf"
+    // (defensively also ".gcode_<digits>.3mf"). All three resolve to
+    // the canonical Bambu plate name ".gcode.3mf"; anything else is
+    // returned unchanged.
+    public static string RepairPlateFileName(string fileName)
+    {
+        if (string.IsNullOrEmpty(fileName))
+            return fileName;
+        if (fileName.EndsWith(".gcode_.3mf", StringComparison.OrdinalIgnoreCase))
+            return fileName.Substring(0, fileName.Length - ".gcode_.3mf".Length) + ".gcode.3mf";
+        var dedup = Regex.Match(fileName, @"\.gcode[-_]\d+\.3mf$", RegexOptions.IgnoreCase);
+        if (dedup.Success)
+            return fileName.Substring(0, dedup.Index) + ".gcode.3mf";
+        return fileName;
+    }
     public async Task<(bool Ok, string Reason)> UploadFileAsync(string localPath, string fileName, CancellationToken ct)
     {
         var (ok, reason) = CheckIdentity();
         if (!ok) return (false, reason);
-        // Repair dashboard-mangled plate filenames: the dashboard sanitizes
-        // ".gcode.3mf" to ".gcode_.3mf", which Bambu printers reject.
-        var uploadFileName = fileName;
-        if (fileName.EndsWith(".gcode_.3mf", StringComparison.OrdinalIgnoreCase))
-        {
-            uploadFileName = fileName.Substring(0, fileName.Length - ".gcode_.3mf".Length) + ".gcode.3mf";
+        // Repair dashboard-mangled plate filenames (see
+        // RepairPlateFileName): the dashboard sanitizes ".gcode.3mf"
+        // to ".gcode_.3mf", and WordPress/Media dedup renames it to
+        // ".gcode-<digits>.3mf"; Bambu printers reject both forms.
+        var uploadFileName = RepairPlateFileName(fileName);
+        if (!string.Equals(uploadFileName, fileName, StringComparison.Ordinal))
             Program.Log($"[Bambu] Repaired mangled plate filename '{fileName}' -> '{uploadFileName}' for upload");
-        }
         try
         {
             // Primary path: curl reuses the control channel TLS session
@@ -395,14 +412,13 @@ public sealed class BambuAdapter : IPrinterAdapter
     }
     public async Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct)
     {
-        // Repair dashboard-mangled plate filenames: the dashboard sanitizes
-        // ".gcode.3mf" to ".gcode_.3mf", which Bambu printers reject.
-        var startFileName = fileName;
-        if (fileName.EndsWith(".gcode_.3mf", StringComparison.OrdinalIgnoreCase))
-        {
-            startFileName = fileName.Substring(0, fileName.Length - ".gcode_.3mf".Length) + ".gcode.3mf";
+        // Repair dashboard-mangled plate filenames (see
+        // RepairPlateFileName): the dashboard sanitizes ".gcode.3mf"
+        // to ".gcode_.3mf", and WordPress/Media dedup renames it to
+        // ".gcode-<digits>.3mf"; Bambu printers reject both forms.
+        var startFileName = RepairPlateFileName(fileName);
+        if (!string.Equals(startFileName, fileName, StringComparison.Ordinal))
             Program.Log($"[Bambu] Repaired mangled plate filename '{fileName}' -> '{startFileName}' for start");
-        }
         // Community-documented start shape; the Worker verifies via
         // status polls that printing actually began, and fails the
         // job if it did not within two minutes.
