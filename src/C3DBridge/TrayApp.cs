@@ -35,6 +35,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private bool _exitRequested;
     private ToolStripMenuItem? _autoUpdateItem;
     private ToolStripMenuItem? _action1Item;
+    private ToolStripMenuItem? _driveItem;
     // UI thread context, captured in the constructor (which runs
     // on the UI thread). The auto-update timer runs on a
     // thread-pool thread, so the Action1 auto-check is posted
@@ -104,6 +105,35 @@ public sealed class TrayApplicationContext : ApplicationContext
             }
         };
         menu.Items.Add(_action1Item);
+        // Google Drive for Desktop: a checkable tray menu item,
+        // mirroring the Action1 client item above. The check mark
+        // is DETECTION, not a toggle: checked means Drive for
+        // Desktop was found on this PC, unchecked means none was
+        // found. Clicking it when unchecked downloads Google's
+        // official installer and installs it silently; clicking
+        // it when checked only reports it is installed, it never
+        // uninstalls on an uncheck. Signing in to Google inside
+        // the app is NOT part of the install.
+        _driveItem = new ToolStripMenuItem("Install Google Drive for Desktop…");
+        // Same 2280 guard as the Action1 item: an async-void
+        // click handler that throws kills the tray app with no
+        // message. Catch everything here and report it in a box
+        // instead.
+        _driveItem.Click += async (_, _) =>
+        {
+            try { await InstallDriveAsync(); }
+            catch (Exception ex)
+            {
+                Program.Log($"Google Drive menu click failed (tray kept alive): {ex.Message}");
+                try
+                {
+                    MessageBox.Show($"Google Drive for Desktop install could not start: {ex.Message}",
+                        "C3D Print Bridge — Google Drive for Desktop", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                catch { /* never let the error box itself kill the tray */ }
+            }
+        };
+        menu.Items.Add(_driveItem);
         menu.Items.Add(new ToolStripSeparator());
         var repairItem = new ToolStripMenuItem("Repair and reinstall…");
         repairItem.Click += (_, _) => UninstallApp("Uninstall-Repair-Reinstall.ps1",
@@ -142,6 +172,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         SleepPreventer.Prevent();
         RefreshAutoUpdateMenu();
         RefreshAction1Menu();
+        RefreshDriveMenu();
     }
 
     // Creat3d World logo (rounded logo) as the tray + application icon.
@@ -1850,6 +1881,66 @@ public sealed class TrayApplicationContext : ApplicationContext
             _action1Item.Checked = false;
             _action1Item.Text = "Install Action1 client…";
         }
+    }
+
+    // Google Drive for Desktop. The check mark is live detection,
+    // so the menu can never show "installed" for an app that is
+    // not actually there. Called on startup and after every
+    // install attempt.
+    private void RefreshDriveMenu()
+    {
+        if (_driveItem is null) return;
+        try
+        {
+            var installed = DriveDesktopClient.IsInstalled();
+            _driveItem.Checked = installed;
+            _driveItem.Text = installed ? "Google Drive for Desktop installed ✓" : "Install Google Drive for Desktop…";
+        }
+        catch (Exception ex)
+        {
+            // Same 2280 rule as the Action1 refresh: detection
+            // must never break the tray menu.
+            Program.Log($"Google Drive menu refresh failed (tray kept alive): {ex.Message}");
+            _driveItem.Checked = false;
+            _driveItem.Text = "Install Google Drive for Desktop…";
+        }
+    }
+
+    private async Task InstallDriveAsync()
+    {
+        if (DriveDesktopClient.IsInstalled())
+        {
+            RefreshDriveMenu();
+            var drive = DriveDesktopClient.VirtualDriveLetter();
+            var already = drive is not null
+                ? $"Google Drive for Desktop is already installed on this PC, and your Drive files are on drive {drive}."
+                : "Google Drive for Desktop is already installed on this PC. If your Drive files are not showing, open Google Drive for Desktop and sign in — signing in is a separate step the app itself handles.";
+            MessageBox.Show(already,
+                "C3D Print Bridge", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            "Download Google Drive for Desktop from Google and install it?\n\nThis installs Google's official sync app (about a 277 MB download), so this PC can read its Drive files straight from the file system. Installing is silent — no prompts — but you will be asked to approve an administrator prompt. Signing in to Google inside the app afterwards is a separate step you do yourself.",
+            "C3D Print Bridge — Install Google Drive for Desktop", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (confirm != DialogResult.Yes) return;
+
+        // Download + install run on a worker thread so the tray
+        // icon stays responsive while they run — same reason as
+        // the Action1 flow: a hung installer must never freeze
+        // the tray menu itself.
+        var (downloaded, downloadError) = await Task.Run(() => DriveDesktopClient.DownloadAsync());
+        if (downloaded is null)
+        {
+            MessageBox.Show(downloadError, "C3D Print Bridge — Google Drive for Desktop",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var (ok, detail) = await Task.Run(() => DriveDesktopClient.InstallAsync(downloaded));
+        RefreshDriveMenu();
+        MessageBox.Show(detail, "C3D Print Bridge — Google Drive for Desktop",
+            MessageBoxButtons.OK, ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
     private async Task InstallAction1Async()
