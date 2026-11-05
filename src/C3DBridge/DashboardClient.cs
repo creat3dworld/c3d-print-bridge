@@ -139,6 +139,10 @@ public sealed class DashboardClient : IDisposable
                             material = s.Material,
                             color = s.Color,
                         }),
+                        // GATE-AMS BUILD (2026.1105): when this
+                        // AMS reading was observed, so the
+                        // dashboard can show its age.
+                        observed_unix = p.Ams.AmsObservedUnix,
                     },
                     light_state = p.LightState,
                     // GATE-LIGHT BUILD (2026.1105): printer-

@@ -220,11 +220,13 @@ public static class GcodeFileParser
     /// index, or null when it cannot be mapped. "T1" maps to 1.
     /// A bare integer N maps to N-1 (ASSUMED 1-based slot
     /// numbering: the Oct 30 collar job carried Plate/AMS "1"
-    /// for a file that hard-selects T0). Anything else
-    /// ("AMS A2", blank, free text) maps to null = unknown,
-    /// never guessed. A wrong 1-based assumption can only
-    /// HOLD a job (safe direction), never mis-start one —
-    /// but confirm the numbering on the first live run.</summary>
+    /// for a file that hard-selects T0). The dashboard's own
+    /// slot labels "A1".."A4" (and "AMS A2") map the same way
+    /// (A1 -> 0). Anything else (blank, free text) maps to
+    /// null = unknown, never guessed. A wrong 1-based
+    /// assumption can only HOLD a job (safe direction), never
+    /// mis-start one — but confirm the numbering on the first
+    /// live run.</summary>
     public static int? SlotToToolIndex(string? amsSlot)
     {
         if (string.IsNullOrWhiteSpace(amsSlot))
@@ -235,6 +237,9 @@ public static class GcodeFileParser
             return ti;
         if (int.TryParse(s, out var n) && n >= 1 && n <= 16)
             return n - 1;
+        var am = Regex.Match(s, @"^(?:AMS\s+)?A(\d+)$", RegexOptions.IgnoreCase);
+        if (am.Success && int.TryParse(am.Groups[1].Value, out var an) && an >= 1 && an <= 16)
+            return an - 1;
         return null;
     }
 

@@ -235,7 +235,16 @@ public sealed class BambuAdapter : IPrinterAdapter
 
     private static AmsState ParseAms(JsonElement print)
     {
-        // Collect populated trays across all AMS units.
+        // GATE-AMS BUILD (2026.1105): stamp every AMS reading
+        // with the time it was observed from the printer's own
+        // report, so the dashboard can show the age instead of
+        // presenting a stale value as current.
+        var observedUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        // Collect populated trays across all AMS units. A tray
+        // reporting either a type or a color is a populated
+        // slot (a tray with neither is empty and stays
+        // excluded) — a half-reported tray still carries the
+        // half the printer did report, instead of vanishing.
         var trays = new List<(string Type, string Color, string Id)>();
         if (print.TryGetProperty("ams", out var ams) && ams.TryGetProperty("ams", out var units) &&
             units.ValueKind == JsonValueKind.Array)
@@ -246,10 +255,10 @@ public sealed class BambuAdapter : IPrinterAdapter
                     continue;
                 foreach (var tray in trayArr.EnumerateArray())
                 {
-                    var type = tray.TryGetProperty("tray_type", out var t) ? t.GetString() ?? "" : "";
-                    var color = tray.TryGetProperty("tray_color", out var c) ? c.GetString() ?? "" : "";
-                    var id = tray.TryGetProperty("id", out var i) ? i.GetString() ?? "" : "";
-                    if (!string.IsNullOrWhiteSpace(type) && !string.IsNullOrWhiteSpace(color))
+                    var type = (tray.TryGetProperty("tray_type", out var t) ? t.GetString() ?? "" : "").Trim();
+                    var color = (tray.TryGetProperty("tray_color", out var c) ? c.GetString() ?? "" : "").Trim();
+                    var id = (tray.TryGetProperty("id", out var i) ? i.GetString() ?? "" : "").Trim();
+                    if (!string.IsNullOrWhiteSpace(type) || !string.IsNullOrWhiteSpace(color))
                         trays.Add((type, color, id));
                 }
             }
@@ -266,11 +275,11 @@ public sealed class BambuAdapter : IPrinterAdapter
             Color = NormalizeColor(t.Color),
         }).ToList();
         if (trays.Count == 0)
-            return new AmsState { Known = false, Detail = "No populated AMS tray reported by the printer.", Slots = slots };
+            return new AmsState { Known = false, Detail = "No populated AMS tray reported by the printer.", Slots = slots, AmsObservedUnix = observedUnix };
         if (trays.Count > 1)
-            return new AmsState { Known = false, Detail = $"Multiple AMS trays populated ({trays.Count}); the active tray cannot be determined from this data, so AMS is reported as unknown rather than guessed.", Slots = slots };
+            return new AmsState { Known = false, Detail = $"Multiple AMS trays populated ({trays.Count}); the active tray cannot be determined from this data, so AMS is reported as unknown rather than guessed.", Slots = slots, AmsObservedUnix = observedUnix };
         var only = trays[0];
-        return new AmsState { Known = true, Material = only.Type, Color = NormalizeColor(only.Color), Detail = $"AMS tray {only.Id}.", Slots = slots };
+        return new AmsState { Known = true, Material = only.Type, Color = NormalizeColor(only.Color), Detail = $"AMS tray {only.Id}.", Slots = slots, AmsObservedUnix = observedUnix };
     }
 
     private static string NormalizeColor(string raw)

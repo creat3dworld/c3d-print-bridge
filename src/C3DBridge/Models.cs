@@ -492,6 +492,13 @@ public sealed record AmsState
     [JsonPropertyName("color")] public string Color { get; init; } = "";
     [JsonPropertyName("detail")] public string Detail { get; init; } = "";
     [JsonPropertyName("slots")] public List<AmsSlot> Slots { get; init; } = new();
+    /// <summary>GATE-AMS BUILD (2026.1105): unix time this AMS
+    /// reading was observed from the printer's own report. The
+    /// dashboard can show the age instead of presenting a stale
+    /// value as current. 0 = never observed (printer
+    /// unreachable). Older dashboards ignore unknown JSON
+    /// fields.</summary>
+    [JsonPropertyName("ams_observed_unix")] public long AmsObservedUnix { get; init; }
 }
 
 /// <summary>One populated AMS tray, as reported by the

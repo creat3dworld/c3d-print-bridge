@@ -215,6 +215,47 @@ public sealed class FarmPoller
         }
         ClearHold(job.JobId, "ams-material");
         ClearHold(job.JobId, "ams-color");
+        // GATE-AMS BUILD (2026.1105): live per-slot check. The
+        // single-filament check above only runs when exactly
+        // one tray is populated — with a full 4-slot AMS it
+        // never runs at all, so a job could start on a slot
+        // whose live filament contradicts the job. Check the
+        // job's own slot against the live per-slot rows: the
+        // job's ams_slot maps to a tool index (SlotToToolIndex,
+        // same 1-based assumption as the file-tool gate), and
+        // the live slot is the tray whose id equals that index
+        // (Bambu tray ids are 0-based within the AMS unit, the
+        // same numbering StartPrint's ams_mapping uses —
+        // confirm on the first live run). A material or color
+        // contradiction on THAT slot holds the job; an
+        // unmappable slot, a missing live slot, or
+        // incomparable values mean no hold — the dashboard's
+        // verdict stands.
+        var liveSlotIdx = GcodeFileParser.SlotToToolIndex(job.AmsSlot);
+        if (liveSlotIdx is not null)
+        {
+            var liveSlot = live.Ams.Slots.FirstOrDefault(s =>
+                string.Equals(s.Slot.Trim(), liveSlotIdx.Value.ToString(), StringComparison.Ordinal));
+            if (liveSlot is not null)
+            {
+                if (!string.IsNullOrWhiteSpace(job.Material) && !string.IsNullOrWhiteSpace(liveSlot.Material) &&
+                    !string.Equals(job.Material.Trim(), liveSlot.Material.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    await ReportHoldAsync(job.JobId, "ams-slot-material",
+                        $"[farm] Job {job.JobId}: live AMS slot {job.AmsSlot} reports material '{liveSlot.Material}', job needs '{job.Material}'. Job left queued.", ct);
+                    return;
+                }
+                if (!string.IsNullOrWhiteSpace(job.Color) && !string.IsNullOrWhiteSpace(liveSlot.Color) &&
+                    Safety.ColorsContradict(job.Color, liveSlot.Color))
+                {
+                    await ReportHoldAsync(job.JobId, "ams-slot-color",
+                        $"[farm] Job {job.JobId}: live AMS slot {job.AmsSlot} reports color '{liveSlot.Color}', job needs '{job.Color}'. Job left queued.", ct);
+                    return;
+                }
+            }
+        }
+        ClearHold(job.JobId, "ams-slot-material");
+        ClearHold(job.JobId, "ams-slot-color");
         // File gates: a missing, unsliced, or wrong-kind
         // file is a hold with a reason, never a failed
         // print — the operator fixes the file and the next
