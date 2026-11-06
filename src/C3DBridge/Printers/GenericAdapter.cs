@@ -22,7 +22,7 @@ public sealed class GenericAdapter : IPrinterAdapter
         => Task.FromResult(new PrinterStatus { Name = Name, Type = Type, Ip = Ip, Serial = SerialKey, State = "offline", Detail = $"Generic brand '{_cfg.Type}' — no live adapter yet, config saved." });
     public Task<(bool Ok, string Reason)> UploadFileAsync(string localPath, string fileName, CancellationToken ct)
         => Task.FromResult((false, $"Generic brand '{_cfg.Type}' — upload not supported yet."));
-    public Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct)
+    public Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct, string? localPath = null)
         => Task.FromResult((false, $"Generic brand '{_cfg.Type}' — start not supported yet."));
     public string SnapshotSource => "owner_snapshot_url";
     // Feed (2276): no feed discovery for generic brands —

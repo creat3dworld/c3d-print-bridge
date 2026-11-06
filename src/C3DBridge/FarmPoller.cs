@@ -426,7 +426,7 @@ public sealed class FarmPoller
             await _dashboard.ReportFarmJobAsync(job.JobId, "failed", upReason, null, ct);
             return;
         }
-        var (startOk, startReason) = await adapter.StartPrintAsync(fileName, job.JobId, ct);
+        var (startOk, startReason) = await adapter.StartPrintAsync(fileName, job.JobId, ct, tempPath);
         if (!startOk)
         {
             Cleanup(tempPath);

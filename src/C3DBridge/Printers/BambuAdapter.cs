@@ -54,6 +54,8 @@ using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Text;
 using System.Text.Json;
+using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using MQTTnet;
 using MQTTnet.Client;
@@ -493,7 +495,163 @@ public sealed class BambuAdapter : IPrinterAdapter
             return (false, $"FTPS upload to printer '{Name}' failed: {ex.Message}");
         }
     }
-    public async Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct)
+    // P2S-START (2026.1106): the P2S rejects the P1-style
+    // project_file payload with 0500-4002 "Unsupported file path
+    // or name" (proven live Nov 5, 2026, five identical failures;
+    // the error is FRESH, 11 s after publish, not stale).
+    // bambu-printer-mcp PR #15 (merged 2026-09-27, v1.1.8),
+    // verified on a real P2S running firmware 01.02.00.00, shows
+    // the P2S only accepts the H2-style project_file:
+    // url ftp:///cache/<name> (upload stays at /cache/),
+    // project-length ams_mapping + parallel ams_mapping2,
+    // non-zero project_id/task_id/subtask_id, 0/1 int flags.
+    // Detection is PR #15's exactly: serial prefix "22E" or
+    // model name "p2s". All other Bambu models keep the legacy
+    // P1-style payload unchanged. The X2D is deliberately NOT
+    // included: its Nov 4 0500-4002 is confounded by the mangled
+    // filename (already repaired by RepairPlateFileName), it is
+    // dual-nozzle (different mapping semantics), and the driver
+    // routes it legacy — the X2D needs its own clean-filename
+    // retry first; if it still answers 0500-4002, extend this
+    // route to it with the dual-nozzle mapping work.
+    private bool UsesH2ProjectFile =>
+        (_cfg.Serial ?? "").StartsWith("22E", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(_cfg.Type, "p2s", StringComparison.OrdinalIgnoreCase);
+
+    // Plate metadata for the H2 start payload, read from the
+    // downloaded .3mf at localPath. Returns (filamentCount,
+    // usedPositions, md5). Never throws: any unreadable piece
+    // falls back (count 1, used [0], md5 "") and the failure is
+    // logged — a metadata failure must not block the start.
+    // filamentCount follows bambu-printer-mcp's
+    // resolveProjectFileMetadata: the authoritative source is
+    // the gcode header "; filament_colour = ..." (count of
+    // ;-separated colours), falling back to "; filament_ids = ...".
+    // usedPositions come from Metadata/plate_1.json filament_ids.
+    // md5 is the MD5 of Metadata/plate_1.gcode — read from the
+    // slicer's Metadata/plate_1.gcode.md5 entry when present,
+    // else computed over the entry bytes.
+    private static (int FilamentCount, int[] UsedPositions, string Md5) ReadPlateMetadata(string? localPath)
+    {
+        var fallback = (1, new[] { 0 }, "");
+        if (string.IsNullOrWhiteSpace(localPath) || !File.Exists(localPath))
+            return fallback;
+        try
+        {
+            using var zip = new ZipArchive(File.OpenRead(localPath), ZipArchiveMode.Read);
+            var gcodeEntry = zip.GetEntry("Metadata/plate_1.gcode");
+            if (gcodeEntry is null)
+                return fallback;
+            var filamentCount = 1;
+            var usedPositions = new[] { 0 };
+            var md5 = "";
+            var md5Entry = zip.GetEntry("Metadata/plate_1.gcode.md5");
+            if (md5Entry is not null)
+            {
+                using var md5Reader = new StreamReader(md5Entry.Open());
+                var text = md5Reader.ReadToEnd().Trim().ToLowerInvariant();
+                if (text.Length == 32 && Regex.IsMatch(text, "^[0-9a-f]{32}$"))
+                    md5 = text;
+            }
+            using (var gcodeStream = gcodeEntry.Open())
+            {
+                var head = new byte[32 * 1024];
+                var read = 0;
+                while (read < head.Length)
+                {
+                    var n = gcodeStream.Read(head, read, head.Length - read);
+                    if (n == 0) break;
+                    read += n;
+                }
+                var headText = Encoding.UTF8.GetString(head, 0, read);
+                var colour = Regex.Match(headText, @";\s*filament_colour\s*=\s*([^\r\n]+)", RegexOptions.IgnoreCase);
+                if (colour.Success)
+                {
+                    filamentCount = Math.Max(1, colour.Groups[1].Value.Split(';').Count(s => !string.IsNullOrWhiteSpace(s)));
+                }
+                else
+                {
+                    var ids = Regex.Match(headText, @";\s*filament_ids\s*=\s*([^\r\n]+)", RegexOptions.IgnoreCase);
+                    if (ids.Success)
+                        filamentCount = Math.Max(1, ids.Groups[1].Value.Split(';').Count(s => !string.IsNullOrWhiteSpace(s)));
+                }
+            }
+            if (string.IsNullOrEmpty(md5))
+            {
+                // No usable .md5 entry: compute over the gcode bytes.
+                using var fullStream = gcodeEntry.Open();
+                using var md5Hash = MD5.Create();
+                md5 = Convert.ToHexString(md5Hash.ComputeHash(fullStream)).ToLowerInvariant();
+            }
+            var jsonEntry = zip.GetEntry("Metadata/plate_1.json");
+            if (jsonEntry is not null)
+            {
+                try
+                {
+                    using var jsonReader = new StreamReader(jsonEntry.Open());
+                    using var doc = JsonDocument.Parse(jsonReader.ReadToEnd());
+                    if (doc.RootElement.TryGetProperty("filament_ids", out var idsEl) && idsEl.ValueKind == JsonValueKind.Array)
+                    {
+                        var ids = idsEl.EnumerateArray()
+                            .Where(e => e.ValueKind == JsonValueKind.Number && e.TryGetInt32(out _))
+                            .Select(e => e.GetInt32())
+                            .Where(i => i >= 0)
+                            .ToArray();
+                        if (ids.Length > 0)
+                            usedPositions = ids;
+                    }
+                }
+                catch { /* malformed plate_1.json: keep [0] */ }
+            }
+            filamentCount = Math.Max(Math.Max(filamentCount, usedPositions.Max() + 1), 1);
+            return (filamentCount, usedPositions, md5);
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"[Bambu] Plate metadata read failed ({ex.GetType().Name}: {ex.Message}); using single-filament defaults.");
+            return fallback;
+        }
+    }
+
+    // H2 ams_mapping2 entry (bambu-printer-mcp ams-mapping.ts,
+    // bridgeAmsMapping2Entry, single-nozzle form): tray values
+    // 0..n map to ams_id = tray / 4, slot_id = tray % 4; -1 (and
+    // the 255 virtual tray) mean unused.
+    private static object H2Mapping2Entry(int v)
+    {
+        if (v < 0) return new { ams_id = 255, slot_id = 255 };
+        if (v == 255) return new { ams_id = 255, slot_id = 255 };
+        if (v == 254) return new { ams_id = 254, slot_id = 254 };
+        if (v >= 128) return new { ams_id = 128, slot_id = v - 128 };
+        return new { ams_id = v / 4, slot_id = v % 4 };
+    }
+
+    // H2 mapping (bambu-printer-mcp PR #15 / current main):
+    // projLen = max(projectFilamentCount, baseMapping.length, 1);
+    // baseMapping is the project-length array with the plate's
+    // used positions set to the job's tray and the rest -1.
+    // The bridge only ever sends single-slot jobs (the AMS gate
+    // holds anything else before it reaches StartPrint), and the
+    // tray has always been hardcoded to 0 — so the used positions
+    // map to tray 0 here, preserving current behaviour. Wiring
+    // the job's AMS slot through to the start payload is a
+    // separate follow-up.
+    private static (int[] Mapping, object[] Mapping2) BuildH2Mapping(int filamentCount, int[] usedPositions)
+    {
+        var baseMapping = new int[Math.Max(filamentCount, 1)];
+        for (var i = 0; i < baseMapping.Length; i++) baseMapping[i] = -1;
+        foreach (var pos in usedPositions)
+        {
+            if (pos >= 0 && pos < baseMapping.Length) baseMapping[pos] = 0;
+        }
+        var projLen = Math.Max(Math.Max(filamentCount, baseMapping.Length), 1);
+        var mapping = new int[projLen];
+        for (var i = 0; i < projLen; i++) mapping[i] = i < baseMapping.Length ? baseMapping[i] : -1;
+        var mapping2 = mapping.Select(v => H2Mapping2Entry(v)).ToArray();
+        return (mapping, mapping2);
+    }
+
+    public async Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct, string? localPath = null)
     {
         // Repair dashboard-mangled plate filenames (see
         // RepairPlateFileName): the dashboard sanitizes ".gcode.3mf"
@@ -507,19 +665,82 @@ public sealed class BambuAdapter : IPrinterAdapter
         // job if it did not within two minutes.
         var isPlateFile = startFileName.EndsWith(".gcode.3mf", StringComparison.OrdinalIgnoreCase) || startFileName.EndsWith(".3mf", StringComparison.OrdinalIgnoreCase);
         var startParam = isPlateFile ? "Metadata/plate_1.gcode" : startFileName;
-        var command = new
+        // The P2S takes the H2-style project_file (see
+        // UsesH2ProjectFile); every other Bambu keeps the legacy
+        // P1-style payload below, unchanged, so this change cannot
+        // regress them. (Legacy field set and values are identical
+        // to before; only the JSON serialization order differs,
+        // which JSON parsers ignore.)
+        var isH2 = UsesH2ProjectFile;
+        var print = new Dictionary<string, object>
         {
-            print = new
-            {
-                sequence_id = "1",
-                command = "project_file",
-                                param = startParam, url = "file:///sdcard/cache/" + startFileName, file = startFileName, md5 = "", bed_type = "auto", use_ams = true, ams_mapping = new[] { 0, -1, -1, -1, -1 }, ams_mapping2 = new[] { new { ams_id = 0, slot_id = 0 } }, timelapse = false, bed_leveling = true, flow_cali = false, vibration_cali = false, layer_inspect = false,
-                subtask_name = startFileName,
-                project_id = "0", task_id = "0", subtask_id = "0",
-            },
+            ["sequence_id"] = "1",
+            ["command"] = "project_file",
+            ["param"] = startParam,
+            ["file"] = startFileName,
+            ["bed_type"] = "auto",
+            ["use_ams"] = true,
         };
+        if (isH2)
+        {
+            // Submission id: bambu-printer-mcp's exactly —
+            // String(Date.now() & 0x7fffffff), the same value for
+            // project_id, task_id and subtask_id. Guard the
+            // (vanishingly unlikely) zero so the ids are never "0".
+            var rawId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() & 0x7fffffff;
+            var submissionId = (rawId == 0 ? 1 : rawId).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var (filamentCount, usedPositions, md5) = isPlateFile
+                ? ReadPlateMetadata(localPath)
+                : (1, new[] { 0 }, "");
+            var (mapping, mapping2) = BuildH2Mapping(filamentCount, usedPositions);
+            print["url"] = "ftp:///cache/" + startFileName;
+            print["md5"] = md5;
+            // 0/1 int flags on the H2 route (the driver sends ints,
+            // not booleans). bed_leveling 1 + auto_bed_leveling 1
+            // preserve the bridge's existing always-level intent as
+            // a coherent pair; Studio's own default is (0, 2)
+            // ("auto") if the owner ever wants that instead.
+            // nozzle_offset_cali 2 is Studio's "auto" default for a
+            // single-nozzle P2S. subtask_name drops the ".3mf", as
+            // the driver does.
+            print["timelapse"] = 0;
+            print["bed_leveling"] = 1;
+            print["auto_bed_leveling"] = 1;
+            print["flow_cali"] = 0;
+            print["vibration_cali"] = 0;
+            print["layer_inspect"] = 0;
+            print["cfg"] = "0";
+            print["extrude_cali_flag"] = 0;
+            print["extrude_cali_manual_mode"] = 0;
+            print["nozzle_offset_cali"] = 2;
+            print["subtask_name"] = Regex.Replace(startFileName, @"\.3mf$", "", RegexOptions.IgnoreCase);
+            print["profile_id"] = "0";
+            print["project_id"] = submissionId;
+            print["task_id"] = submissionId;
+            print["subtask_id"] = submissionId;
+            print["ams_mapping"] = mapping;
+            print["ams_mapping2"] = mapping2;
+            Program.Log($"[Bambu] StartPrint H2-style (P2S) submissionId={submissionId} filaments={filamentCount} mapping=[{string.Join(",", mapping)}] md5={(string.IsNullOrEmpty(md5) ? "(empty)" : "set")}");
+        }
+        else
+        {
+            print["url"] = "file:///sdcard/cache/" + startFileName;
+            print["md5"] = "";
+            print["timelapse"] = false;
+            print["bed_leveling"] = true;
+            print["flow_cali"] = false;
+            print["vibration_cali"] = false;
+            print["layer_inspect"] = false;
+            print["subtask_name"] = startFileName;
+            print["project_id"] = "0";
+            print["task_id"] = "0";
+            print["subtask_id"] = "0";
+            print["ams_mapping"] = new[] { 0, -1, -1, -1, -1 };
+            print["ams_mapping2"] = new[] { new { ams_id = 0, slot_id = 0 } };
+        }
+        var command = new { print };
         // 2026.1105-push-log: concise StartPrint record (file / subtask_name / param).
-        Program.Log($"[Bambu] StartPrint publish: file={startFileName} subtask_name={startFileName} param={startParam}");
+        Program.Log($"[Bambu] StartPrint publish: file={startFileName} subtask_name={print["subtask_name"]} param={startParam}");
         Program.Log($"[Bambu] StartPrint payload: {JsonSerializer.Serialize(command)}");
         var startResult = await PublishCommandAsync(command, ct);
         Program.Log($"[Bambu] StartPrint publish result: ok={startResult.Ok} reason={startResult.Reason}");

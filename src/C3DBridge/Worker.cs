@@ -464,7 +464,7 @@ public sealed class Worker
                 continue;
             }
 
-            var (startOk, startReason) = await adapter.StartPrintAsync(fileName, job.JobKey, ct);
+            var (startOk, startReason) = await adapter.StartPrintAsync(fileName, job.JobKey, ct, tempPath);
             if (!startOk)
             {
                 Cleanup(tempPath);

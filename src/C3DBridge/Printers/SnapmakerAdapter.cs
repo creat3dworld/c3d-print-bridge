@@ -534,7 +534,7 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
         }
     }
 
-    public async Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct)
+    public async Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct, string? localPath = null)
     {
         try
         {

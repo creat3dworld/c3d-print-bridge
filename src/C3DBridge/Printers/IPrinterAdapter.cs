@@ -40,7 +40,7 @@ public interface IPrinterAdapter
     /// <summary>Forward a start command for a file already uploaded.
     /// Returns (ok, reason). The caller (Worker) verifies via later
     /// status polls that the printer actually started printing.</summary>
-    Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct);
+    Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct, string? localPath = null);
 
     /// <summary>Capture a still image when one is available, as JPEG
     /// bytes. Returns null when no still can be captured — never a
