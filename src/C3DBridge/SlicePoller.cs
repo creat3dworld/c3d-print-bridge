@@ -34,6 +34,14 @@
 //    the G-code (base64, 25 MB cap) and the target model
 //    as "Sliced for". Any failure reports 'failed' with
 //    the reason and attaches nothing.
+//  - A failed slice is KEPT, not deleted: the work folder
+//    is moved to failed-slices\slice_<jobId>_FAILED_<
+//    YYYYMMDD-HHMM> under the app dir, and the slicer's
+//    command line plus the tail of its stdout/stderr go
+//    into bridge.log — so the next bare exit code (e.g.
+//    Bambu Studio -2, Nov 8, 2026) is diagnosable
+//    instead of a dead end. Only a successful slice
+//    deletes its work folder.
 //  - CLI flags are the OrcaSlicer/Bambu Studio family
 //    (OrcaSlicer wiki "CLI Mode" + Bambu Studio "Command
 //    Line Usage"): --load-settings, --load-filaments,
@@ -68,7 +76,9 @@ public sealed class SlicePoller
         Process Process,
         string WorkDir,
         string OutDir,
-        DateTime StartedAt);
+        DateTime StartedAt,
+        Task<string> StdOutTask,
+        Task<string> StdErrTask);
 
     public SlicePoller(DashboardClient dashboard, BridgeConfig config)
     {
@@ -171,7 +181,7 @@ public sealed class SlicePoller
         {
             Program.Log($"[slice] Job {job.SliceJobId}: library file download failed ({dlReason}).");
             await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Library file download failed: {dlReason}", null, null, null, ct);
-            CleanupDir(workDir);
+            RetainFailedSliceDir(workDir, job.SliceJobId);
             return;
         }
         // The input must be a 3MF (ZIP); anything else is
@@ -184,14 +194,14 @@ public sealed class SlicePoller
             {
                 Program.Log($"[slice] Job {job.SliceJobId}: library file is not a 3MF (no PK magic). Refused.");
                 await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", "Library file is not a 3MF file.", null, null, null, ct);
-                CleanupDir(workDir);
+                RetainFailedSliceDir(workDir, job.SliceJobId);
                 return;
             }
         }
         catch (Exception ex)
         {
             await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Could not read the library file: {ex.Message}", null, null, null, ct);
-            CleanupDir(workDir);
+            RetainFailedSliceDir(workDir, job.SliceJobId);
             return;
         }
 
@@ -212,7 +222,7 @@ public sealed class SlicePoller
             {
                 Program.Log($"[slice] Job {job.SliceJobId}: 3MF-to-STL conversion failed ({convReason}).");
                 await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Could not convert the 3MF model to STL for Snapmaker Orca: {convReason}", null, null, null, ct);
-                CleanupDir(workDir);
+                RetainFailedSliceDir(workDir, job.SliceJobId);
                 return;
             }
             sliceInputPath = stlPath;
@@ -227,12 +237,26 @@ public sealed class SlicePoller
         // on 2.4.1). Bambu Studio and OrcaSlicer accept them.
         if (!isSnapmakerOrca)
             args += $" --export-statistics --logfile \"{logPath}\"";
+        // Log the exact command line before starting: when
+        // a slicer exits with a bare code (Bambu Studio -2,
+        // Nov 8, 2026) the command is the first thing
+        // needed, and nothing else on the shop PC records
+        // it. Paths only — no secrets ever pass through
+        // here.
+        Program.Log($"[slice] Job {job.SliceJobId}: running {exe} {args}");
         var start = new ProcessStartInfo
         {
             FileName = exe,
             Arguments = args,
             UseShellExecute = false,
             CreateNoWindow = true,
+            // Capture the slicer's own output: without
+            // redirection a failing slicer's error text
+            // goes nowhere and only its exit code survives.
+            // The reads start immediately so a chatty
+            // slicer can never block on a full pipe.
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
         };
         Process proc;
         try
@@ -244,10 +268,12 @@ public sealed class SlicePoller
         {
             Program.Log($"[slice] Job {job.SliceJobId}: could not start the slicer ({ex.Message}).");
             await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Could not start the slicer: {ex.Message}", null, null, null, ct);
-            CleanupDir(workDir);
+            RetainFailedSliceDir(workDir, job.SliceJobId);
             return;
         }
-        _running = new RunningSlice(job, proc, workDir, outDir, DateTime.UtcNow);
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+        _running = new RunningSlice(job, proc, workDir, outDir, DateTime.UtcNow, stdoutTask, stderrTask);
         Program.Log($"[slice] Job {job.SliceJobId}: slicing started with '{slicer}' for model '{job.TargetModel}', plate {job.Plate} (runs in the background; status polls continue).");
     }
 
@@ -258,28 +284,47 @@ public sealed class SlicePoller
         if (!run.Process.HasExited && DateTime.UtcNow - run.StartedAt > timeout)
         {
             try { run.Process.Kill(entireProcessTree: true); } catch { /* already gone */ }
-            Program.Log($"[slice] Job {run.Job.SliceJobId}: slicing timed out after {timeout.TotalMinutes} minutes. Killed and failed.");
-            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Slicing timed out after {timeout.TotalMinutes} minutes.", null, null, null, ct);
+            // The kill closes the slicer's streams, so the
+            // output reads finish; collect what it printed
+            // before it was killed.
+            var timeoutStdout = await ReadOutputSoonAsync(run.StdOutTask);
+            var timeoutStderr = await ReadOutputSoonAsync(run.StdErrTask);
+            run.Process.Dispose();
             _running = null;
-            CleanupDir(run.WorkDir);
+            LogSlicerOutputTail(run.Job.SliceJobId, timeoutStdout, timeoutStderr);
+            var timeoutKept = RetainFailedSliceDir(run.WorkDir, run.Job.SliceJobId);
+            var timeoutHint = EvidenceSuffix(timeoutKept);
+            Program.Log($"[slice] Job {run.Job.SliceJobId}: slicing timed out after {timeout.TotalMinutes} minutes. Killed and failed.{timeoutHint}");
+            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Slicing timed out after {timeout.TotalMinutes} minutes.{timeoutHint}", null, null, null, ct);
             return;
         }
         if (!run.Process.HasExited)
             return;
         var exitCode = run.Process.ExitCode;
+        // Collect the slicer's output BEFORE disposing the
+        // process: disposing closes the redirected streams
+        // and the reads would come back empty.
+        var stdout = await ReadOutputSoonAsync(run.StdOutTask);
+        var stderr = await ReadOutputSoonAsync(run.StdErrTask);
         run.Process.Dispose();
         _running = null;
         if (exitCode != 0)
         {
-            // Snapmaker Orca writes no CLI log file for this
-            // slice (its CLI rejects --logfile), so there is
-            // no slice log to point at for it.
-            var logHint = string.Equals(run.Job.Slicer, "snapmaker-orca", StringComparison.OrdinalIgnoreCase)
-                ? "Snapmaker Orca writes no CLI log file for this slice."
-                : "See the slice log on the shop PC.";
+            LogSlicerOutputTail(run.Job.SliceJobId, stdout, stderr);
+            var kept = RetainFailedSliceDir(run.WorkDir, run.Job.SliceJobId);
+            // The old hint ("See the slice log on the shop
+            // PC") pointed at a log the bridge had already
+            // deleted with the work folder. The folder is
+            // now retained under its own name, so say so;
+            // Snapmaker Orca still writes no CLI log file,
+            // but the retained folder (input + the slicer's
+            // captured output in bridge.log) is the
+            // evidence either way.
+            var logHint = kept is not null
+                ? $"Failed slice kept in failed-slices\\{kept} on the shop PC; the slicer's output is in bridge.log."
+                : "The failed slice folder could not be retained on the shop PC.";
             Program.Log($"[slice] Job {run.Job.SliceJobId}: slicer exited with code {exitCode}. Failed; {logHint}");
             await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Slicer exited with code {exitCode}. {logHint}", null, null, null, ct);
-            CleanupDir(run.WorkDir);
             return;
         }
         // Find plate_N.gcode in the output dir; if the
@@ -311,25 +356,25 @@ public sealed class SlicePoller
         }
         if (!File.Exists(gcodePath))
         {
-            Program.Log($"[slice] Job {run.Job.SliceJobId}: slicer exited 0 but no plate_{plate}.gcode was produced. Failed; nothing attached.");
-            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Slicer finished but produced no plate_{plate}.gcode.", null, null, null, ct);
-            CleanupDir(run.WorkDir);
+            var noGcodeKept = RetainFailedSliceDir(run.WorkDir, run.Job.SliceJobId);
+            Program.Log($"[slice] Job {run.Job.SliceJobId}: slicer exited 0 but no plate_{plate}.gcode was produced. Failed; nothing attached.{EvidenceSuffix(noGcodeKept)}");
+            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Slicer finished but produced no plate_{plate}.gcode.{EvidenceSuffix(noGcodeKept)}", null, null, null, ct);
             return;
         }
         var verify = VerifyGcode(gcodePath);
         if (verify is not null)
         {
-            Program.Log($"[slice] Job {run.Job.SliceJobId}: G-code verification failed ({verify}). Nothing attached.");
-            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Sliced G-code failed verification: {verify}", null, null, null, ct);
-            CleanupDir(run.WorkDir);
+            var verifyKept = RetainFailedSliceDir(run.WorkDir, run.Job.SliceJobId);
+            Program.Log($"[slice] Job {run.Job.SliceJobId}: G-code verification failed ({verify}). Nothing attached.{EvidenceSuffix(verifyKept)}");
+            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Sliced G-code failed verification: {verify}{EvidenceSuffix(verifyKept)}", null, null, null, ct);
             return;
         }
         var bytes = await File.ReadAllBytesAsync(gcodePath, ct);
         if (bytes.Length > MaxReportBytes)
         {
-            Program.Log($"[slice] Job {run.Job.SliceJobId}: sliced G-code is {bytes.Length} bytes, over the {MaxReportBytes} report cap. Failed; nothing attached.");
-            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", "Sliced G-code is too large to report to the dashboard.", null, null, null, ct);
-            CleanupDir(run.WorkDir);
+            var tooBigKept = RetainFailedSliceDir(run.WorkDir, run.Job.SliceJobId);
+            Program.Log($"[slice] Job {run.Job.SliceJobId}: sliced G-code is {bytes.Length} bytes, over the {MaxReportBytes} report cap. Failed; nothing attached.{EvidenceSuffix(tooBigKept)}");
+            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Sliced G-code is too large to report to the dashboard.{EvidenceSuffix(tooBigKept)}", null, null, null, ct);
             return;
         }
         // Slice-output name rule (Nov 7, 2026): a slice output
@@ -479,6 +524,100 @@ public sealed class SlicePoller
     {
         s = (s ?? "").Trim();
         return s.Length <= 200 ? s : s[..200] + "…";
+    }
+
+    /// <summary>Move a failed slice's work folder out of
+    /// temp into failed-slices under the app dir, stamped
+    /// with the job id and the local date+time (YYYYMMDD-
+    /// HHMM, the same date+time rule as log archives) so
+    /// one failure never overwrites another. The folder
+    /// keeps the downloaded input, the slicer's slice.log
+    /// (when it writes one) and any partial output.
+    /// Returns the retained folder name, or null when the
+    /// move failed — then the folder is deleted instead so
+    /// temp does not fill up, and the caller says so.</summary>
+    private static string? RetainFailedSliceDir(string workDir, string jobId)
+    {
+        // Job ids come from the dashboard ("slice_<n>_<n>")
+        // but never trust a name that ends up in a path.
+        var safeId = string.Concat(jobId.Where(c => !Path.GetInvalidFileNameChars().Contains(c)));
+        if (string.IsNullOrWhiteSpace(safeId)) safeId = "unknown";
+        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmm");
+        var name = $"slice_{safeId}_FAILED_{stamp}";
+        var retainedRoot = Path.Combine(Config.AppDir, "failed-slices");
+        try
+        {
+            Directory.CreateDirectory(retainedRoot);
+            var dest = Path.Combine(retainedRoot, name);
+            // Two failures in the same minute must not
+            // collide: suffix until the name is free.
+            var n = 2;
+            while (Directory.Exists(dest))
+            {
+                dest = Path.Combine(retainedRoot, $"{name}-{n}");
+                n++;
+            }
+            Directory.Move(workDir, dest);
+            var kept = Path.GetFileName(dest);
+            Program.Log($"[slice] Job {jobId}: failed slice kept in failed-slices\\{kept} (input, slice log and any partial output).");
+            return kept;
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"[slice] Job {jobId}: could not retain the failed slice folder ({ex.Message}); deleting it instead.");
+            CleanupDir(workDir);
+            return null;
+        }
+    }
+
+    /// <summary>Dashboard-facing suffix naming where the
+    /// failed slice's evidence was kept ("" when it could
+    /// not be retained).</summary>
+    private static string EvidenceSuffix(string? kept)
+        => kept is null ? "" : $" Evidence kept in failed-slices\\{kept} on the shop PC.";
+
+    /// <summary>Read a slicer output stream that should
+    /// already be finished (the process exited or was
+    /// killed). Waits at most 10 seconds, then gives up
+    /// with "" rather than stalling the poll loop.</summary>
+    private static async Task<string> ReadOutputSoonAsync(Task<string> task)
+    {
+        var done = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(10)));
+        if (done != task) return "";
+        try { return await task; } catch { return ""; }
+    }
+
+    /// <summary>Log the tail of the slicer's combined
+    /// stdout/stderr (last 30 non-blank lines, stderr
+    /// first, each line truncated) so the slicer's own
+    /// error text survives in bridge.log when it exits
+    /// non-zero or is killed. A slicer that printed
+    /// nothing says so in one line.</summary>
+    private static void LogSlicerOutputTail(string jobId, string stdout, string stderr)
+    {
+        var tail = new Queue<string>();
+        void AddLines(string? text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            foreach (var raw in text.Split('\n'))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0) continue;
+                if (line.Length > 300) line = line[..300] + "…";
+                tail.Enqueue(line);
+                while (tail.Count > 30) tail.Dequeue();
+            }
+        }
+        AddLines(stderr);
+        AddLines(stdout);
+        if (tail.Count == 0)
+        {
+            Program.Log($"[slice] Job {jobId}: slicer printed nothing to stdout/stderr.");
+            return;
+        }
+        Program.Log($"[slice] Job {jobId}: slicer output (last {tail.Count} lines):");
+        foreach (var line in tail)
+            Program.Log($"[slice] Job {jobId} slicer: {line}");
     }
 
     private static void CleanupDir(string dir)
