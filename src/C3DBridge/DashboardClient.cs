@@ -501,6 +501,72 @@ public sealed class DashboardClient : IDisposable
         return ok;
     }
 
+    /// <summary>LITHOPHANE (2026.1107): poll GET
+    /// c3d-lithophane/v1/generation-jobs for pending
+    /// print-file generation jobs. Same Bearer key as every
+    /// other dashboard request. Returns null on any failure
+    /// (caller logs the reason). A 404 means the lithophane
+    /// plugin routes are not installed yet — logged once by
+    /// the caller, like the OCR endpoint rule.</summary>
+    public async Task<(List<LithophaneJob>? Jobs, string? Problem)> PollLithophaneJobsAsync(CancellationToken ct)
+    {
+        var (ok, status, body) = await SendAsync(HttpMethod.Get, "/wp-json/c3d-lithophane/v1/generation-jobs", null, ct);
+        if (!ok)
+        {
+            if (status == System.Net.HttpStatusCode.NotFound)
+                return (null, "Lithophane generation endpoints are not installed yet.");
+            if (status == System.Net.HttpStatusCode.Unauthorized)
+                return (null, "Bridge API key was rejected by the dashboard.");
+            return (null, $"Lithophane job poll failed ({(int)status}): {Trim(body)}");
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var jobs = new List<LithophaneJob>();
+            if (doc.RootElement.TryGetProperty("jobs", out var arr) && arr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in arr.EnumerateArray())
+                {
+                    var job = JsonSerializer.Deserialize<LithophaneJob>(el.GetRawText(), JsonOptions);
+                    if (job is not null) jobs.Add(job);
+                }
+            }
+            return (jobs, null);
+        }
+        catch (Exception ex)
+        {
+            return (null, $"Dashboard returned a lithophane job list the bridge could not read: {ex.Message}");
+        }
+    }
+
+    /// <summary>LITHOPHANE (2026.1107): report a generation
+    /// outcome to POST c3d-lithophane/v1/generation-report.
+    /// Status is "done" (model 3MF + sliced G-code names,
+    /// sizes and layer count carried — the files themselves
+    /// already sit in the Drive order folder, so nothing is
+    /// base64'd back) or "failed" (reason carried, no
+    /// files). The dashboard verifies the files are actually
+    /// in Drive before marking the job done.</summary>
+    public async Task<bool> ReportLithophaneAsync(string jobId, string status, string reason,
+        string? model3mfName, string? gcodeName, string? plate3mfName,
+        long modelBytes, long gcodeBytes, int layers, CancellationToken ct)
+    {
+        var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-lithophane/v1/generation-report",
+            new
+            {
+                job_id = jobId,
+                status,
+                reason,
+                model_3mf_name = model3mfName,
+                gcode_name = gcodeName,
+                plate_3mf_name = plate3mfName,
+                model_bytes = modelBytes,
+                gcode_bytes = gcodeBytes,
+                layers,
+            }, ct);
+        return ok;
+    }
+
     /// <summary>AUTO-START BUILD: report a detected printer
     /// move to POST farm/printer-moved. The dashboard
     /// updates its manual printer record for that name to

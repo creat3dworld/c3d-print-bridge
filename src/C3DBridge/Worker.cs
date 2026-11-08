@@ -59,6 +59,7 @@ public sealed class Worker
     private readonly FarmPoller _farmPoller;
     private readonly IpReconciler _ipReconciler;
     private readonly SlicePoller _slicePoller;
+    private readonly LithophanePoller _lithophanePoller;
     private readonly OcrPoller _ocrPoller;
     private readonly Dictionary<string, ActiveJob> _active = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _terminalReported = new(StringComparer.OrdinalIgnoreCase);
@@ -92,6 +93,7 @@ public sealed class Worker
         _farmPoller = new FarmPoller(dashboard, printers, cfg);
         _ipReconciler = new IpReconciler(dashboard, printers);
         _slicePoller = new SlicePoller(dashboard, cfg);
+        _lithophanePoller = new LithophanePoller(dashboard, cfg);
         _ocrPoller = new OcrPoller(dashboard);
     }
 
@@ -297,6 +299,13 @@ public sealed class Worker
                         // at a time, in the background; it never
                         // blocks status polls or heartbeats.
                         await _slicePoller.PollAsync(ct);
+                        // LITHOPHANE (2026.1107): print-file
+                        // generation for lithophane orders, on
+                        // the same job-poll tick. One generation
+                        // at a time, in the background; it never
+                        // blocks status polls or heartbeats, and
+                        // never starts a print.
+                        await _lithophanePoller.PollAsync(ct);
                         // Bridge OCR stage: poll bridge/ocr-jobs
                         // too, on the same job-poll tick as the
                         // farm poller. OcrPoller never starts a

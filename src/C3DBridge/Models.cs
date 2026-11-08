@@ -166,6 +166,16 @@ public sealed record BridgeConfig
     /// take before the bridge kills it and reports failure.
     /// Default 15.</summary>
     [JsonPropertyName("slice_timeout_minutes")] public int SliceTimeoutMinutes { get; init; } = 15;
+    /// <summary>LITHOPHANE (2026.1107) — Python used to run
+    /// the mesh generator, and the mesh script itself.
+    /// Defaults: "python" from PATH, and
+    /// tools\lithophane-mesh.py under the bridge install
+    /// folder (Config.AppDir). Both are free (Python + numpy
+    /// + Pillow + trimesh, pip-installable); a generation job
+    /// fails honestly when either is missing, instead of
+    /// inventing a mesh.</summary>
+    [JsonPropertyName("lithophane_python_path")] public string? LithophanePythonPath { get; init; }
+    [JsonPropertyName("lithophane_mesh_script")] public string? LithophaneMeshScript { get; init; }
     /// <summary>Non-3D printer queues the owner picked by Windows
     /// queue name (Oct 24, 2026). These are NOT 3D printers and
     /// are never in PrinterRegistry: no 3D job, farm job, or
@@ -314,6 +324,32 @@ public sealed record SliceJob
     /// fragments — the slicer CLI does not resolve
     /// inherits/include, and an unresolved preset slices
     /// "successfully" onto a generic bed).</summary>
+    [JsonPropertyName("preset_printer")] public string PresetPrinter { get; init; } = "";
+    [JsonPropertyName("preset_process")] public string PresetProcess { get; init; } = "";
+    [JsonPropertyName("preset_filament")] public string PresetFilament { get; init; } = "";
+}
+
+/// <summary>One queued lithophane print-file generation
+/// job from GET /wp-json/c3d-lithophane/v1/generation-jobs
+/// (plugin c3d-lithophane v2, 2026.1107). The photo already
+/// sits in Drive (Lithophane Orders / order-N /); the
+/// bridge reads it from its Drive for Desktop sync copy,
+/// generates the lithophane 3MF, slices it for the target
+/// printer, and writes the model 3MF + sliced G-code back
+/// into the same Drive order folder. The bridge never
+/// invents a mesh and never slices without the full preset
+/// exports named here — a missing preset fails honestly,
+/// exactly like a slice job.</summary>
+public sealed record LithophaneJob
+{
+    [JsonPropertyName("job_id")] public string JobId { get; init; } = "";
+    [JsonPropertyName("order_id")] public int OrderId { get; init; }
+    [JsonPropertyName("photo_name")] public string PhotoName { get; init; } = "";
+    [JsonPropertyName("photo_size")] public long PhotoSize { get; init; }
+    [JsonPropertyName("drive_file_id")] public string DriveFileId { get; init; } = "";
+    [JsonPropertyName("drive_folder_id")] public string DriveFolderId { get; init; } = "";
+    [JsonPropertyName("target_model")] public string TargetModel { get; init; } = "";
+    [JsonPropertyName("slicer")] public string Slicer { get; init; } = "";
     [JsonPropertyName("preset_printer")] public string PresetPrinter { get; init; } = "";
     [JsonPropertyName("preset_process")] public string PresetProcess { get; init; } = "";
     [JsonPropertyName("preset_filament")] public string PresetFilament { get; init; } = "";
