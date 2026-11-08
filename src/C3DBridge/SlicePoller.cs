@@ -38,11 +38,17 @@
 //    (OrcaSlicer wiki "CLI Mode" + Bambu Studio "Command
 //    Line Usage"): --load-settings, --load-filaments,
 //    --slice, --outputdir, --export-statistics, --logfile.
-//    Snapmaker Orca shares the Orca lineage, but its CLI
-//    is NOT yet verified on the shop PC — the pilot
-//    script proves it (or falls back to plain OrcaSlicer
-//    with a U1 profile, or to GUI slicing) before any
-//    production slice job uses it.
+//    Snapmaker Orca does NOT accept --export-statistics
+//    or --logfile (prints Usage + "setup params error",
+//    proven Nov 8, 2026 on 2.4.1), so this poller omits
+//    both flags for it. Snapmaker Orca's CLI also crashes
+//    on 3MF input carrying plate data (upstream issue
+//    #935, exit -1073741819, proven Nov 8, 2026: mount
+//    3MF crashed, mount STL sliced exit 0), so for
+//    Snapmaker Orca the input 3MF is converted to STL
+//    first (tools\3mf-to-stl.py, Python + trimesh) and
+//    the STL is fed to the slicer. Bambu Studio and
+//    OrcaSlicer keep the 3MF input and the full flag set.
 
 using System.Diagnostics;
 using System.IO.Compression;
@@ -189,10 +195,38 @@ public sealed class SlicePoller
             return;
         }
 
+        // Snapmaker Orca's CLI crashes on 3MF input carrying
+        // plate data (upstream issue #935, proven Nov 8,
+        // 2026), so for Snapmaker Orca the model is
+        // converted to STL first and the STL is fed to the
+        // slicer. Bambu Studio / OrcaSlicer take the 3MF
+        // as-is. A failed conversion fails the job honestly
+        // — a slice is never started from a bad file.
+        var isSnapmakerOrca = slicer == "snapmaker-orca";
+        var sliceInputPath = inputPath;
+        if (isSnapmakerOrca)
+        {
+            var stlPath = Path.Combine(workDir, "input.stl");
+            var (convOk, convReason) = await Convert3mfToStlAsync(inputPath, stlPath, ct);
+            if (!convOk)
+            {
+                Program.Log($"[slice] Job {job.SliceJobId}: 3MF-to-STL conversion failed ({convReason}).");
+                await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Could not convert the 3MF model to STL for Snapmaker Orca: {convReason}", null, null, null, ct);
+                CleanupDir(workDir);
+                return;
+            }
+            sliceInputPath = stlPath;
+        }
+
         var logPath = Path.Combine(workDir, "slice.log");
-        var args = $"\"{inputPath}\" --load-settings \"{printerJson};{processJson}\" " +
+        var args = $"\"{sliceInputPath}\" --load-settings \"{printerJson};{processJson}\" " +
             $"--load-filaments \"{filamentJson}\" --slice {job.Plate} " +
-            $"--outputdir \"{outDir}\" --export-statistics --logfile \"{logPath}\"";
+            $"--outputdir \"{outDir}\"";
+        // Snapmaker Orca's CLI rejects --export-statistics and
+        // --logfile ("setup params error", proven Nov 8, 2026
+        // on 2.4.1). Bambu Studio and OrcaSlicer accept them.
+        if (!isSnapmakerOrca)
+            args += $" --export-statistics --logfile \"{logPath}\"";
         var start = new ProcessStartInfo
         {
             FileName = exe,
@@ -237,8 +271,14 @@ public sealed class SlicePoller
         _running = null;
         if (exitCode != 0)
         {
-            Program.Log($"[slice] Job {run.Job.SliceJobId}: slicer exited with code {exitCode}. Failed; see the slice log on the shop PC.");
-            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Slicer exited with code {exitCode}. See the slice log on the shop PC.", null, null, null, ct);
+            // Snapmaker Orca writes no CLI log file for this
+            // slice (its CLI rejects --logfile), so there is
+            // no slice log to point at for it.
+            var logHint = string.Equals(run.Job.Slicer, "snapmaker-orca", StringComparison.OrdinalIgnoreCase)
+                ? "Snapmaker Orca writes no CLI log file for this slice."
+                : "See the slice log on the shop PC.";
+            Program.Log($"[slice] Job {run.Job.SliceJobId}: slicer exited with code {exitCode}. Failed; {logHint}");
+            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Slicer exited with code {exitCode}. {logHint}", null, null, null, ct);
             CleanupDir(run.WorkDir);
             return;
         }
@@ -346,6 +386,99 @@ public sealed class SlicePoller
         {
             return $"could not be read ({ex.Message}).";
         }
+    }
+
+    /// <summary>Convert a 3MF model to STL with the bundled
+    /// Python script (tools\3mf-to-stl.py, trimesh) — the
+    /// Snapmaker Orca slice path only. Returns (ok, reason);
+    /// a failure means the slice must not start.</summary>
+    private async Task<(bool Ok, string Reason)> Convert3mfToStlAsync(string input3mf, string outputStl, CancellationToken ct)
+    {
+        // Python: the bridge's shared install, the same one
+        // the lithophane mesh step uses (lithophane_python_
+        // path in bridge-config.json, default "python" from
+        // PATH). trimesh AND networkx must be installed
+        // (pip install trimesh networkx) — trimesh's 3MF
+        // loader needs networkx for its scene graph.
+        var python = string.IsNullOrWhiteSpace(_config.LithophanePythonPath) ? "python" : _config.LithophanePythonPath!.Trim();
+        var pythonExe = python.Contains(Path.DirectorySeparatorChar) || python.Contains(Path.AltDirectorySeparatorChar)
+            ? (File.Exists(python) ? python : null)
+            : FindOnPath(python.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? python : python + ".exe")
+              ?? FindOnPath(python);
+        if (pythonExe is null)
+            return (false, "Python is not installed on the shop PC, so the 3MF model could not be converted to STL for Snapmaker Orca. Install Python 3.10+ with trimesh and networkx (pip install trimesh networkx) and make python available on PATH.");
+        var script = Path.Combine(Config.AppDir, "tools", "3mf-to-stl.py");
+        if (!File.Exists(script))
+            return (false, "The 3MF-to-STL script is missing on the shop PC (tools\\3mf-to-stl.py). Redeploy the bridge.");
+        var (ok, text, reason) = await RunToolWithOutputAsync(
+            pythonExe, $"\"{script}\" --in \"{input3mf}\" --out \"{outputStl}\"", TimeSpan.FromMinutes(5), ct);
+        if (!ok)
+            return (false, string.IsNullOrWhiteSpace(reason) ? "the converter failed." : reason);
+        if (!File.Exists(outputStl) || new FileInfo(outputStl).Length == 0)
+            return (false, "the converter reported success but wrote no STL file.");
+        Program.Log($"[slice] 3MF converted to STL for Snapmaker Orca ({new FileInfo(outputStl).Length} bytes; {TrimReason(text)}).");
+        return (true, "");
+    }
+
+    private static string? FindOnPath(string exe)
+    {
+        var path = Environment.GetEnvironmentVariable("PATH") ?? "";
+        foreach (var dir in path.Split(Path.PathSeparator))
+        {
+            if (string.IsNullOrWhiteSpace(dir)) continue;
+            try
+            {
+                var candidate = Path.Combine(dir.Trim(), exe);
+                if (File.Exists(candidate)) return candidate;
+            }
+            catch { /* ignore an unusable PATH entry */ }
+        }
+        return null;
+    }
+
+    private static async Task<(bool Ok, string Text, string Reason)> RunToolWithOutputAsync(
+        string exe, string args, TimeSpan timeout, CancellationToken ct)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = exe,
+                Arguments = args,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using var proc = Process.Start(psi);
+            if (proc is null) return (false, "", "");
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(timeout);
+            var outTask = proc.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+            var errTask = proc.StandardError.ReadToEndAsync(timeoutCts.Token);
+            try
+            {
+                await proc.WaitForExitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { /* best effort */ }
+                return (false, "", "Tool timed out.");
+            }
+            var text = await outTask;
+            var err = await errTask;
+            return (proc.ExitCode == 0, text, TrimReason(err));
+        }
+        catch (Exception ex)
+        {
+            return (false, "", ex.Message);
+        }
+    }
+
+    private static string TrimReason(string s)
+    {
+        s = (s ?? "").Trim();
+        return s.Length <= 200 ? s : s[..200] + "…";
     }
 
     private static void CleanupDir(string dir)

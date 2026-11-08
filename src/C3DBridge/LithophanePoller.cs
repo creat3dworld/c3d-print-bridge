@@ -244,6 +244,7 @@ public sealed class LithophanePoller
         }
         var photoWork = Path.Combine(workDir, photoFile);
         var model3mf = Path.Combine(workDir, "model.3mf");
+        var modelStl = Path.Combine(workDir, "model.stl");
         try { File.Copy(photoLocal, photoWork, overwrite: true); }
         catch (Exception ex)
         {
@@ -256,7 +257,7 @@ public sealed class LithophanePoller
         // caps its grid (200 samples across), so it finishes
         // in seconds; the 5-minute tool timeout bounds it.
         var (meshOk, meshOut, meshErr) = await RunToolWithOutputAsync(
-            pythonExe, $"\"{script}\" --photo \"{photoWork}\" --out \"{model3mf}\" --stl \"{Path.Combine(workDir, "model.stl")}\"", MeshTimeout, ct);
+            pythonExe, $"\"{script}\" --photo \"{photoWork}\" --out \"{model3mf}\" --stl \"{modelStl}\"", MeshTimeout, ct);
         if (!meshOk || !File.Exists(model3mf) || new FileInfo(model3mf).Length == 0)
         {
             var why = MeshSummaryError(meshOut) ?? TrimReason(meshErr);
@@ -273,9 +274,35 @@ public sealed class LithophanePoller
         var baseName = OutputBaseName(photoFile);
         var slug = PrinterSlug(job.TargetModel);
         var logPath = Path.Combine(workDir, "slice.log");
-        var args = $"\"{model3mf}\" --load-settings \"{printerJson};{processJson}\" " +
+        // Same two Snapmaker Orca CLI limits as SlicePoller
+        // (proven Nov 8, 2026 on 2.4.1): --export-statistics
+        // and --logfile are rejected ("setup params error"),
+        // and 3MF input carrying plate data crashes (issue
+        // #935). For Snapmaker Orca, feed the STL the mesh
+        // step already wrote and omit both flags; Bambu
+        // Studio / OrcaSlicer keep the 3MF and the full flag
+        // set. (The lithophane slice has a third, separate
+        // blocker — the U1 preset's machine start G-code
+        // references a variable the Orca CLI parser does not
+        // know — which this patch does not touch.)
+        var isSnapmakerOrca = slicer == "snapmaker-orca";
+        var sliceInputPath = model3mf;
+        if (isSnapmakerOrca)
+        {
+            if (!File.Exists(modelStl))
+            {
+                Program.Log($"[litho] Job {job.JobId}: the mesh step did not write model.stl, so there is no STL to feed Snapmaker Orca.");
+                await ReportFailedAsync(job, "The lithophane mesh step did not produce an STL file for Snapmaker Orca.", ct);
+                CleanupDir(workDir);
+                return;
+            }
+            sliceInputPath = modelStl;
+        }
+        var args = $"\"{sliceInputPath}\" --load-settings \"{printerJson};{processJson}\" " +
             $"--load-filaments \"{filamentJson}\" --slice 1 " +
-            $"--outputdir \"{outDir}\" --export-statistics --logfile \"{logPath}\"";
+            $"--outputdir \"{outDir}\"";
+        if (!isSnapmakerOrca)
+            args += $" --export-statistics --logfile \"{logPath}\"";
         var start = new ProcessStartInfo
         {
             FileName = exe,
@@ -320,8 +347,14 @@ public sealed class LithophanePoller
         _running = null;
         if (exitCode != 0)
         {
-            Program.Log($"[litho] Job {run.Job.JobId}: slicer exited with code {exitCode}. Failed; see the slice log on the shop PC.");
-            await ReportFailedAsync(run.Job, $"Slicer exited with code {exitCode}. See the slice log on the shop PC.", ct);
+            // Snapmaker Orca writes no CLI log file for this
+            // slice (its CLI rejects --logfile), so there is
+            // no slice log to point at for it.
+            var logHint = string.Equals(run.Job.Slicer, "snapmaker-orca", StringComparison.OrdinalIgnoreCase)
+                ? "Snapmaker Orca writes no CLI log file for this slice."
+                : "See the slice log on the shop PC.";
+            Program.Log($"[litho] Job {run.Job.JobId}: slicer exited with code {exitCode}. Failed; {logHint}");
+            await ReportFailedAsync(run.Job, $"Slicer exited with code {exitCode}. {logHint}", ct);
             CleanupDir(run.WorkDir);
             return;
         }
