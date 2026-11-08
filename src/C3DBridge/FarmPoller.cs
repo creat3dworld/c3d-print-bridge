@@ -28,13 +28,18 @@
 //    stop) and report 'paused' / 'finished', or
 //    'control_failed' with the command named so the
 //    dashboard keeps the dispatch pending for retry.
-//  - For controls (lights/home/power): lights execute on
-//    Snapmaker (SET_LED) and Bambu (ledctrl); home/power
-//    execution is GATED on the bridge's home_power_allowed
-//    flag (owner A7 decision, default off) — a gated
-//    intent is reported as gated, never executed, never
-//    silently dropped. Power has no verified execution
-//    path on any brand even when the flag is on.
+//  - For controls (lights/home/power/reboot): lights
+//    execute on Snapmaker (SET_LED) and Bambu (ledctrl);
+//    home/power execution is GATED on the bridge's
+//    home_power_allowed flag (owner A7 decision, default
+//    off) — a gated intent is reported as gated, never
+//    executed, never silently dropped. Power has no
+//    verified execution path on any brand even when the
+//    flag is on. Reboot executes on Bambu (MQTT system
+//    reboot) and Snapmaker (Moonraker POST /machine/reboot)
+//    behind a live-state gate — only an idle or errored
+//    printer is rebooted, never a printing or paused one;
+//    generic adapters report not supported.
 //
 // SINGLE STARTER RULE: this poller is the ONLY farm-job
 // starter. GET bridge/jobs stays a read-only mirror whose
@@ -631,6 +636,30 @@ public sealed class FarmPoller
                     ledOk ? ledDetail : ledReason, ct);
                 continue;
             }
+            if (command == "reboot")
+            {
+                // REBOOT (2026.1105): remote printer restart, so
+                // an errored printer can be cleared without
+                // walking to it. Bambu via MQTT system reboot;
+                // Snapmaker via Moonraker POST /machine/reboot;
+                // generic adapters report not supported. The
+                // live-state gate in ExecBambuRebootAsync /
+                // ExecSnapmakerRebootAsync is the safety: only
+                // idle/error proceed, so a stale dashboard page
+                // cannot reboot a printer that has since started.
+                var (rebootOk, rebootReason, rebootDetail) = adapter switch
+                {
+                    BambuAdapter bambu => await ExecBambuRebootAsync(bambu, ct),
+                    SnapmakerAdapter snapmaker => await ExecSnapmakerRebootAsync(snapmaker, ct),
+                    _ => (false, $"Reboot is not supported for printer type '{adapter.Type}'.", ""),
+                };
+                Program.Log(rebootOk
+                    ? $"[farm] Reboot sent to {adapter.Name}."
+                    : $"[farm] Reboot to {adapter.Name} failed: {rebootReason}");
+                await _dashboard.ReportControlAsync(control.PrinterIp, control.Command, rebootOk,
+                    rebootOk ? rebootDetail : rebootReason, ct);
+                continue;
+            }
             if (command == "home" || command == "power")
             {
                 if (!_config.HomePowerAllowed)
@@ -687,6 +716,55 @@ public sealed class FarmPoller
         return verified
             ? (true, "", "Chamber light turned on (Bambu ledctrl, printer-confirmed in lights_report).")
             : (false, $"Chamber light not confirmed on: {reason} (last printer-reported mode: '{observed}').", "");
+    }
+
+    private static async Task<(bool Ok, string Reason, string Detail)> ExecBambuRebootAsync(BambuAdapter bambu, CancellationToken ct)
+    {
+        // Safety: read the LIVE state at execution time and
+        // proceed only for idle/error. The dashboard disables
+        // the Reboot button while printing/paused, but the page
+        // can be stale, so the bridge is the final gate. A
+        // printing/paused printer is refused (rebooting kills
+        // the print); offline/unknown is refused too (the state
+        // cannot be confirmed, and the publish would fail
+        // anyway). Error is the target case: an errored printer
+        // is idle for practical purposes and the reboot is what
+        // clears it.
+        var live = await bambu.GetStatusAsync(ct);
+        var state = (live.State ?? "").Trim().ToLowerInvariant();
+        if (state is "printing" or "paused")
+            return (false, $"Reboot refused: printer '{bambu.Name}' is {state} — rebooting would stop the print.", "");
+        if (state is not ("idle" or "error"))
+            return (false, $"Reboot refused: printer '{bambu.Name}' is {state} — the reboot is only sent when the live state is idle or error, so the printer is not rebooted on an unconfirmed state.", "");
+        var (ok, reason) = await bambu.RebootAsync(ct);
+        return ok
+            ? (true, "", $"Reboot command sent to {bambu.Name} (was {state}). The printer restarts and its MQTT connection drops; allow ~30-60 s before treating it as down. The bridge will report its state on the next poll.")
+            : (false, $"Reboot command to {bambu.Name} failed: {reason}", "");
+    }
+
+    private static async Task<(bool Ok, string Reason, string Detail)> ExecSnapmakerRebootAsync(SnapmakerAdapter snapmaker, CancellationToken ct)
+    {
+        // Safety: read the LIVE state at execution time and
+        // proceed only for idle/error — the same gate as
+        // ExecBambuRebootAsync. The dashboard disables the
+        // Reboot button while printing/paused, but the page
+        // can be stale, so the bridge is the final gate. A
+        // printing/paused printer is refused (rebooting kills
+        // the print); offline/unknown is refused too (the state
+        // cannot be confirmed, and the POST would fail
+        // anyway). Error is the target case: an errored printer
+        // is idle for practical purposes and the reboot is what
+        // clears it.
+        var live = await snapmaker.GetStatusAsync(ct);
+        var state = (live.State ?? "").Trim().ToLowerInvariant();
+        if (state is "printing" or "paused")
+            return (false, $"Reboot refused: printer '{snapmaker.Name}' is {state} — rebooting would stop the print.", "");
+        if (state is not ("idle" or "error"))
+            return (false, $"Reboot refused: printer '{snapmaker.Name}' is {state} — the reboot is only sent when the live state is idle or error, so the printer is not rebooted on an unconfirmed state.", "");
+        var (ok, reason) = await snapmaker.RebootAsync(ct);
+        return ok
+            ? (true, "", $"Reboot command sent to {snapmaker.Name} (was {state}). The printer's host restarts and Moonraker goes down; allow ~60-90 s before treating it as down. The bridge will report its state on the next poll.")
+            : (false, $"Reboot command to {snapmaker.Name} failed: {reason}", "");
     }
 
     private IPrinterAdapter? ResolveAdapter(FarmJob job)
@@ -755,8 +833,12 @@ public sealed class FarmPoller
 
     private static string SanitizeFileName(string name)
     {
+        // No-underscore rule (Nov 7, 2026): invalid filename
+        // characters are replaced with a hyphen, never an
+        // underscore, so a sanitized name can never carry "_"
+        // into a printer-bound filename.
         foreach (var c in Path.GetInvalidFileNameChars())
-            name = name.Replace(c, '_');
+            name = name.Replace(c, '-');
         return string.IsNullOrWhiteSpace(name) ? "print-file" : name;
     }
 }

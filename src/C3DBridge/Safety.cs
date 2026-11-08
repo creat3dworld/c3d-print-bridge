@@ -60,7 +60,7 @@ public static class Safety
 
     /// <summary>True only when two color values are comparable AND
     /// different. Comparable means both are hex (after stripping an
-    /// alpha prefix and '#') or both are names. A name versus a hex
+    /// alpha suffix — RRGGBBAA — and '#') or both are names. A name versus a hex
     /// is incomparable — not a contradiction.</summary>
     public static bool ColorsContradict(string wanted, string actual)
     {
@@ -79,9 +79,9 @@ public static class Safety
 
     /// <summary>Color comparison that tolerates the two shapes the
     /// dashboard and printers use: a name ("Black") or a hex value
-    /// ("000000" / "FF000000" with optional alpha). Names compare
-    /// case-insensitively; hex values compare on their last 6 digits
-    /// (RGB), ignoring an alpha prefix. A name never matches a hex —
+    /// ("000000" / "000000FF" RRGGBBAA). Names compare
+    /// case-insensitively; hex values compare on their first 6 digits
+    /// (RGB), ignoring an alpha suffix. A name never matches a hex —
     /// that stays unverifiable on the dashboard side, not a pass here.</summary>
     public static bool ColorsMatch(string wanted, string actual)
     {
@@ -100,7 +100,10 @@ public static class Safety
     {
         var v = value.Trim().TrimStart('#');
         if (v.Length == 6 && v.All(Uri.IsHexDigit)) return v.ToUpperInvariant();
-        if (v.Length == 8 && v.All(Uri.IsHexDigit)) return v[2..].ToUpperInvariant();
+        // Bambu tray_color is RRGGBBAA (alpha LAST); the RGB is the
+        // first 6 digits. (Was v[2..] on an ARGB assumption, which
+        // dropped the red byte and blue-shifted every color.)
+        if (v.Length == 8 && v.All(Uri.IsHexDigit)) return v[..6].ToUpperInvariant();
         return null;
     }
 }

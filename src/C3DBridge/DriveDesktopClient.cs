@@ -151,11 +151,18 @@ public static class DriveDesktopClient
     /// checked exactly like a dashboard download (no hash
     /// on the job = no check); a mismatch deletes the copy
     /// and tries the next name, never a stale file. Nothing
-    /// is uploaded, nothing is modified in Drive, and a
-    /// missing drive, a missing file, or a failed copy all
-    /// report (false, reason) so the caller keeps its
-    /// existing download-hold behavior. File names only are
-    /// logged, never file contents.</summary>
+    /// is uploaded; a missing drive, a missing file, or a
+    /// failed copy all report (false, reason) so the caller
+    /// keeps its existing download-hold behavior. File names
+    /// only are logged, never file contents.
+    /// No-underscore rule (Nov 7, 2026): a found copy whose
+    /// name contains "_" is renamed in the local Drive folder
+    /// before use (underscores deleted; a duplicate or failed
+    /// rename prefixes a YYYYMMDD-HHMM stamp to the start of
+    /// the name). The rename syncs to Google Drive. A rename
+    /// that fails both ways only logs — the copy is still
+    /// used, because the printer-bound name is sanitized
+    /// separately by the adapter.</summary>
     public static async Task<(bool Ok, string Reason)> TryUseLocalCopyAsync(
         string fileName, string? alternateFileName, string expectedSha256, string destPath,
         BridgeConfig config, CancellationToken ct = default)
@@ -186,6 +193,29 @@ public static class DriveDesktopClient
             bool exists;
             try { exists = File.Exists(source); } catch { continue; }
             if (!exists) continue;
+            // No-underscore rule (Nov 7, 2026): a Drive file whose
+            // name contains "_" is renamed before use — underscores
+            // are deleted from the name (not hyphenated). If the
+            // stripped name already exists or the rename fails, a
+            // YYYYMMDD-HHMM stamp is prefixed to the START of the
+            // name and the rename is retried once. A rename that
+            // fails both ways only logs: the copy is still used,
+            // because the printer-bound name is sanitized
+            // separately by the adapter, so the print stays safe.
+            if (safe.Contains('_'))
+            {
+                var renamed = TryRenameDriveFile(source, safe.Replace("_", "", StringComparison.Ordinal));
+                if (renamed is not null)
+                {
+                    Program.Log($"[farm] Local Drive copy renamed '{safe}' -> '{renamed}' (no-underscore rule).");
+                    safe = renamed;
+                    source = Path.Combine(root, folder, safe);
+                }
+                else
+                {
+                    Program.Log($"[farm] Local Drive copy '{safe}' could not be renamed to a name without underscores; using its bytes anyway — the printer-bound name is sanitized separately.");
+                }
+            }
             try
             {
                 // The download path creates this only after a
@@ -221,6 +251,43 @@ public static class DriveDesktopClient
             return (true, "");
         }
         return (false, lastReason ?? $"No local Drive copy of '{fileName}' was found.");
+    }
+
+    /// <summary>Rename a Drive-for-Desktop file to a name without
+    /// underscores (Nov 7, 2026 no-underscore rule). Tries the
+    /// stripped name first (underscores deleted); if that name
+    /// already exists or the rename fails, prefixes a date+time
+    /// stamp (YYYYMMDD-HHMM) to the START of the name and retries
+    /// once. Returns the new file name on success, else null. The
+    /// rename happens in the local sync folder, so Drive for
+    /// Desktop syncs it to Google Drive.</summary>
+    private static string? TryRenameDriveFile(string sourcePath, string strippedName)
+    {
+        var dir = Path.GetDirectoryName(sourcePath);
+        if (string.IsNullOrEmpty(dir) || string.IsNullOrWhiteSpace(strippedName)) return null;
+        var strippedPath = Path.Combine(dir, strippedName);
+        try
+        {
+            if (!File.Exists(strippedPath))
+            {
+                File.Move(sourcePath, strippedPath);
+                return strippedName;
+            }
+        }
+        catch { /* fall through to the dated retry */ }
+        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmm", System.Globalization.CultureInfo.InvariantCulture);
+        var datedName = stamp + "-" + strippedName;
+        var datedPath = Path.Combine(dir, datedName);
+        try
+        {
+            if (!File.Exists(datedPath))
+            {
+                File.Move(sourcePath, datedPath);
+                return datedName;
+            }
+        }
+        catch { /* both renames failed */ }
+        return null;
     }
 
     /// <summary>Download Google's official installer into the

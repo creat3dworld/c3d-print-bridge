@@ -12,6 +12,10 @@
 //        → starts the uploaded file.
 //   POST /printer/print/cancel → stops a print (not used by the
 //        v1 worker; present for future dashboard cancel support).
+//   POST /machine/reboot → reboots the printer's host (remote
+//        reboot, FarmPoller idle/error gate only; unproven on
+//        the live U1 — a non-2xx answer is reported as a
+//        failure, never claimed as a reboot).
 //   GET  /access/api_key → returns the Moonraker API key as JSON
 //        when the caller is a trusted client (no login). On a U1
 //        whose Fluidd/Paxx UI opens without a password, the bridge
@@ -505,13 +509,19 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
 
     public async Task<(bool Ok, string Reason)> UploadFileAsync(string localPath, string fileName, CancellationToken ct)
     {
+        // No-underscore rule (Nov 7, 2026): printer file names must
+        // not contain "_". Sanitize the name the printer receives;
+        // the local file bytes are unchanged.
+        var uploadFileName = BambuAdapter.SanitizePrinterFileName(fileName);
+        if (!string.Equals(uploadFileName, fileName, StringComparison.Ordinal))
+            Program.Log($"[Snapmaker] Sanitized printer filename '{fileName}' -> '{uploadFileName}' for upload");
         try
         {
             using var form = new MultipartFormDataContent();
             var bytes = await File.ReadAllBytesAsync(localPath, ct);
             var content = new ByteArrayContent(bytes);
             content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-            form.Add(content, "file", fileName);
+            form.Add(content, "file", uploadFileName);
             form.Add(new StringContent("false"), "print");
 
             var req = new HttpRequestMessage(HttpMethod.Post, Base + "/server/files/upload") { Content = form };
@@ -536,9 +546,15 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
 
     public async Task<(bool Ok, string Reason)> StartPrintAsync(string fileName, string jobKey, CancellationToken ct, string? localPath = null)
     {
+        // No-underscore rule (Nov 7, 2026): same sanitization as
+        // the upload, so the start command names exactly the file
+        // that was uploaded.
+        var startFileName = BambuAdapter.SanitizePrinterFileName(fileName);
+        if (!string.Equals(startFileName, fileName, StringComparison.Ordinal))
+            Program.Log($"[Snapmaker] Sanitized printer filename '{fileName}' -> '{startFileName}' for start");
         try
         {
-            var body = JsonSerializer.Serialize(new { filename = fileName });
+            var body = JsonSerializer.Serialize(new { filename = startFileName });
             var req = new HttpRequestMessage(HttpMethod.Post, Base + "/printer/print/start")
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json"),
@@ -609,6 +625,23 @@ public sealed class SnapmakerAdapter : IPrinterAdapter
     public async Task<(bool Ok, string Reason)> HomeAsync(CancellationToken ct)
         => await PostMoonrakerAsync("/printer/gcode/script",
             JsonSerializer.Serialize(new { script = "G28" }), ct);
+
+    /// <summary>Reboot the printer's host via Moonraker
+    /// POST /machine/reboot (Moonraker docs: reboots the
+    /// machine running Moonraker). This is the Snapmaker
+    /// equivalent of the Bambu MQTT system reboot: the
+    /// whole host restarts, so an errored U1 clears without
+    /// walking to it. UNPROVEN on the live U1 — the U1 runs
+    /// a Paxx-modified Moonraker, so the endpoint may be
+    /// absent or behave differently; a non-2xx answer is
+    /// reported as a failure, never claimed as a reboot.
+    /// The host takes ~60-90 s to come back; Moonraker is
+    /// unreachable until then. Executed ONLY behind
+    /// FarmPoller's live-state gate (idle/error only) —
+    /// calling this method directly bypasses that gate, so
+    /// only FarmPoller may call it.</summary>
+    public async Task<(bool Ok, string Reason)> RebootAsync(CancellationToken ct)
+        => await PostMoonrakerAsync("/machine/reboot", null, ct);
 
     private async Task<(bool Ok, string Reason)> PostMoonrakerAsync(string path, string? jsonBody, CancellationToken ct)
     {

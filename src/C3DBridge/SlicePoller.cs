@@ -292,7 +292,14 @@ public sealed class SlicePoller
             CleanupDir(run.WorkDir);
             return;
         }
-        var fileName = $"plate_{plate}.gcode";
+        // Slice-output name rule (Nov 7, 2026): a slice output
+        // filename must not contain "_". Strip underscores entirely
+        // (delete, do not substitute a hyphen). The slicer's own
+        // on-disk file is still "plate_N.gcode" (that is the name
+        // the slicer writes and the name this code looks it up by
+        // above); only the name reported to the dashboard — the
+        // name the stored slice carries — is stripped.
+        var fileName = $"plate{plate}.gcode";
         var sent = await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "done",
             $"Sliced for {run.Job.TargetModel}, plate {plate}.", Convert.ToBase64String(bytes), fileName, run.Job.TargetModel, ct);
         Program.Log(sent

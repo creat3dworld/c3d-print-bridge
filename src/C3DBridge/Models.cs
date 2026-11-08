@@ -337,9 +337,9 @@ public sealed record OcrJob
 /// farm/controls (DRAFT 2026-10-29). The dashboard records
 /// these when the Lights / Home / Power buttons are clicked;
 /// the bridge executes what it safely can and reports back.
-/// Command is "home", "lights", or "power" (dashboard-side
-/// validation); anything else is reported as unsupported,
-/// never executed.</summary>
+/// Command is "home", "lights", "power", or "reboot"
+/// (dashboard-side validation); anything else is reported
+/// as unsupported, never executed.</summary>
 public sealed record FarmControl
 {
     [JsonPropertyName("printer_ip")] public string PrinterIp { get; init; } = "";

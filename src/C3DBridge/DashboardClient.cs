@@ -16,6 +16,7 @@
 // retries a rejected key aggressively, and never falls back to
 // unauthenticated requests.
 
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -52,6 +53,75 @@ public sealed class DashboardClient : IDisposable
     {
         _apiKey = apiKey;
         _keyRejected = false;
+    }
+
+    /// <summary>KEY AUTO-RESYNC (2026.1105, owner rule: a key that
+    /// expires must be grabbed automatically before it expires,
+    /// never stall on a stale key, never need a manual re-copy).
+    /// The bridge key has no time-based expiry — it is valid
+    /// until rotated or revoked — so "before it expires" means
+    /// before a rotation/revoke breaks polling (Nov 5, 18:53:
+    /// a rotated key stalled job polling for hours because the
+    /// bridge never adopted the new one). Server side, when the
+    /// dashboard rotates the key, the old key becomes the
+    /// previous key and every heartbeat/status response carries
+    /// the current key as "new_key" — but only while the bridge
+    /// still authenticates with the previous key. This adopts
+    /// that new key the first time it arrives. Persist FIRST,
+    /// then switch in memory: if the store fails, the in-memory
+    /// key is left alone, so a restart still finds the old key
+    /// on disk and the next heartbeat carries new_key again —
+    /// the adoption retries instead of stranding the bridge on
+    /// a key the dashboard has already retired. Only called
+    /// with a successful response body (a 401/error body never
+    /// carries new_key). The key VALUE is never logged, never
+    /// echoed, never in an exception message — only that an
+    /// adoption happened. The farm/jobs and bridge/jobs
+    /// endpoints do NOT carry new_key (the dashboard merges it
+    /// only into heartbeat/status), so no adoption check is
+    /// needed there. A revoke answers 401 with no key, so a
+    /// revoked bridge still needs a manual rekey — by design,
+    /// this patch does not change that.</summary>
+    private void AdoptRotatedKey(string body)
+    {
+        if (string.IsNullOrEmpty(_apiKey)) return; // no key to rotate from
+        string? candidate;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("new_key", out var el) || el.ValueKind != JsonValueKind.String) return;
+            candidate = el.GetString();
+        }
+        catch { return; } // unreadable body: not a rotation, ignore silently
+        if (!IsValidRotatedKey(candidate)) return;
+        if (string.Equals(candidate, _apiKey, StringComparison.Ordinal)) return;
+        try
+        {
+            Config.StoreKey(candidate);
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"WARNING: dashboard sent a rotated bridge key but it could not be stored ({ex.Message}); keeping the old key — the next heartbeat will carry the new key again.");
+            return;
+        }
+        UpdateKey(candidate);
+        Program.Log("Bridge API key rotated by the dashboard; new key adopted and stored. Job polling continues with the new key.");
+    }
+
+    /// <summary>Dashboard keys are bin2hex(random_bytes(32)):
+    /// exactly 64 lowercase hex chars. Anything else is not a
+    /// key the dashboard generated — never adopt it, so a
+    /// malformed or hostile response can never corrupt the key
+    /// file.</summary>
+    private static bool IsValidRotatedKey([NotNullWhen(true)] string? candidate)
+    {
+        if (string.IsNullOrEmpty(candidate) || candidate.Length != 64) return false;
+        foreach (var ch in candidate)
+        {
+            var ok = (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+            if (!ok) return false;
+        }
+        return true;
     }
 
     private HttpRequestMessage Request(HttpMethod method, string path, object? body = null)
@@ -95,14 +165,15 @@ public sealed class DashboardClient : IDisposable
 
     public async Task<bool> HeartbeatAsync(CancellationToken ct)
     {
-        var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/heartbeat",
+        var (ok, _, body) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/heartbeat",
             new { bridge_name = _bridgeName, version = Program.Version, timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds() }, ct);
+        if (ok) AdoptRotatedKey(body);
         return ok;
     }
 
     public async Task<bool> PushStatusAsync(IReadOnlyList<PrinterStatus> printers, int queueLength, CancellationToken ct)
     {
-        var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/status",
+        var (ok, _, body) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/status",
             new
             {
                 bridge_name = _bridgeName,
@@ -190,6 +261,7 @@ public sealed class DashboardClient : IDisposable
                     }),
                 }),
             }, ct);
+        if (ok) AdoptRotatedKey(body);
         return ok;
     }
 

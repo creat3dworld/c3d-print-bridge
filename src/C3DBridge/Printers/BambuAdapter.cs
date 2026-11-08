@@ -15,7 +15,7 @@
 //     print.gcode_state: RUNNING / PAUSE / IDLE / FINISH / FAILED
 //     print.mc_percent, print.mc_remaining_time
 //     print.ams.ams[].tray[]: tray_type, tray_color (hex, RGB or
-//       ARGB). With exactly one populated tray, that tray is the
+//       RRGGBBAA — alpha LAST). With exactly one populated tray, that tray is the
 //       loaded filament. With several populated trays, the active
 //       tray cannot be determined from this data, so AMS is
 //       reported as unknown rather than guessed.
@@ -287,8 +287,12 @@ public sealed class BambuAdapter : IPrinterAdapter
     private static string NormalizeColor(string raw)
     {
         var v = raw.Trim().TrimStart('#');
-        // Bambu reports ARGB (8 hex digits); strip the alpha prefix.
-        if (v.Length == 8 && v.All(Uri.IsHexDigit)) return v[2..].ToUpperInvariant();
+        // Bambu reports RRGGBBAA (8 hex digits, alpha LAST); strip
+        // the alpha suffix to get RRGGBB. The old code stripped the
+        // alpha PREFIX (ARGB assumption), which dropped the red byte
+        // and shifted every color toward blue — black "161616FF"
+        // read as vivid blue "1616FF", red "FF4343FF" as "4343FF".
+        if (v.Length == 8 && v.All(Uri.IsHexDigit)) return v[..6].ToUpperInvariant();
         return v.ToUpperInvariant();
     }
 
@@ -449,16 +453,41 @@ public sealed class BambuAdapter : IPrinterAdapter
     // (defensively also ".gcode_<digits>.3mf"). All three resolve to
     // the canonical Bambu plate name ".gcode.3mf"; anything else is
     // returned unchanged.
+    // No-underscore rule (Nov 7, 2026): Bambu/printer file names
+    // must not contain "_". After the plate-extension repair above,
+    // any remaining underscore is replaced with a hyphen, so the
+    // name the printer receives is always clean. The repair runs
+    // first, so the repaired ".gcode.3mf" suffix (which has no
+    // underscore) is unaffected. Both UploadFileAsync and
+    // StartPrintAsync call this, so the upload name and the start
+    // command name are always the same sanitized value.
     public static string RepairPlateFileName(string fileName)
     {
         if (string.IsNullOrEmpty(fileName))
             return fileName;
-        if (fileName.EndsWith(".gcode_.3mf", StringComparison.OrdinalIgnoreCase))
-            return fileName.Substring(0, fileName.Length - ".gcode_.3mf".Length) + ".gcode.3mf";
-        var dedup = Regex.Match(fileName, @"\.gcode[-_]\d+\.3mf$", RegexOptions.IgnoreCase);
-        if (dedup.Success)
-            return fileName.Substring(0, dedup.Index) + ".gcode.3mf";
-        return fileName;
+        var repaired = fileName;
+        if (repaired.EndsWith(".gcode_.3mf", StringComparison.OrdinalIgnoreCase))
+            repaired = repaired.Substring(0, repaired.Length - ".gcode_.3mf".Length) + ".gcode.3mf";
+        else
+        {
+            var dedup = Regex.Match(repaired, @"\.gcode[-_]\d+\.3mf$", RegexOptions.IgnoreCase);
+            if (dedup.Success)
+                repaired = repaired.Substring(0, dedup.Index) + ".gcode.3mf";
+        }
+        return SanitizePrinterFileName(repaired);
+    }
+
+    // Printer-bound filename sanitizer (Nov 7, 2026): Bambu/printer
+    // file names must not contain "_". Replace every underscore with
+    // a hyphen; the extension and the rest of the name are unchanged.
+    // Used by RepairPlateFileName (Bambu) and by the Snapmaker
+    // adapter, so every printer receives a clean name no matter
+    // what the dashboard or Bambu Studio named the file.
+    public static string SanitizePrinterFileName(string fileName)
+    {
+        if (string.IsNullOrEmpty(fileName))
+            return fileName;
+        return fileName.Replace("_", "-", StringComparison.Ordinal);
     }
     public async Task<(bool Ok, string Reason)> UploadFileAsync(string localPath, string fileName, CancellationToken ct)
     {
@@ -1009,6 +1038,34 @@ public sealed class BambuAdapter : IPrinterAdapter
                 sequence_id = "1",
                 command = "gcode_line",
                 param = "G28",
+            },
+        };
+        return PublishCommandAsync(command, ct);
+    }
+
+    /// <summary>Reboot the printer via the Bambu MQTT system
+    /// reboot command. Verified payload (bambulabs_api
+    /// PrinterMQTTClient.reboot(), v2.6.4, BambuTools):
+    /// {"system": {"command": "reboot"}} on
+    /// device/{serial}/request — no sequence_id, no other
+    /// fields, matching the verified form exactly. The
+    /// publish only proves the command was sent, not that
+    /// the printer rebooted; the printer's MQTT connection
+    /// drops when it restarts, so the caller must expect a
+    /// disconnect and allow ~30-60 s before treating the
+    /// printer as down. P2S/X2D are unproven for this
+    /// command (single source, no model-specific statement)
+    /// — test on an idle printer first. Executed ONLY
+    /// behind FarmPoller's live-state gate (idle/error
+    /// only) — calling this method directly bypasses that
+    /// gate, so only FarmPoller may call it.</summary>
+    public Task<(bool Ok, string Reason)> RebootAsync(CancellationToken ct)
+    {
+        var command = new
+        {
+            system = new
+            {
+                command = "reboot",
             },
         };
         return PublishCommandAsync(command, ct);
