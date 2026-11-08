@@ -18,7 +18,9 @@
 //    job before the slicer ever runs.
 //  - Slice the 3MF with the SAME slicer CLI form SlicePoller
 //    uses (--load-settings printer;process, --load-filaments,
-//    --slice, --outputdir, --export-statistics, --logfile),
+//    --slice, --outputdir, plus --export-statistics and
+//    --logfile for upstream OrcaSlicer only — Bambu Studio
+//    and Snapmaker Orca omit those two flags),
 //    with the job's lithophane presets (0.12 mm layers, 100%
 //    infill, white PLA). The same G-code verification applies.
 //  - Write the model 3MF + sliced G-code (+ the sliced plate
@@ -278,9 +280,14 @@ public sealed class LithophanePoller
         // (proven Nov 8, 2026 on 2.4.1): --export-statistics
         // and --logfile are rejected ("setup params error"),
         // and 3MF input carrying plate data crashes (issue
-        // #935). For Snapmaker Orca, feed the STL the mesh
-        // step already wrote and omit both flags; Bambu
-        // Studio / OrcaSlicer keep the 3MF and the full flag
+        // #935). --export-statistics and --logfile are
+        // OrcaSlicer-only: Bambu Studio 02.09.01.70 rejects
+        // them too — it prints its --help text and exits -2
+        // (proven Nov 8, 2026; its --help flag table lists
+        // neither flag). For Snapmaker Orca, feed the STL the mesh
+        // step already wrote and omit both flags; Bambu Studio
+        // omits both flags as well and keeps the 3MF; only
+        // upstream OrcaSlicer keeps the 3MF and the full flag
         // set. (The lithophane slice has a third, separate
         // blocker — the U1 preset's machine start G-code
         // references a variable the Orca CLI parser does not
@@ -301,7 +308,7 @@ public sealed class LithophanePoller
         var args = $"\"{sliceInputPath}\" --load-settings \"{printerJson};{processJson}\" " +
             $"--load-filaments \"{filamentJson}\" --slice 1 " +
             $"--outputdir \"{outDir}\"";
-        if (!isSnapmakerOrca)
+        if (slicer == "orcaslicer")
             args += $" --export-statistics --logfile \"{logPath}\"";
         var start = new ProcessStartInfo
         {
@@ -348,11 +355,16 @@ public sealed class LithophanePoller
         if (exitCode != 0)
         {
             // Snapmaker Orca writes no CLI log file for this
-            // slice (its CLI rejects --logfile), so there is
-            // no slice log to point at for it.
+            // slice (its CLI rejects --logfile), and neither
+            // does Bambu Studio (its CLI rejects --logfile
+            // too — proven Nov 8, 2026, exit -2), so there
+            // is no slice log to point at for either.
+            // Only upstream OrcaSlicer gets --logfile.
             var logHint = string.Equals(run.Job.Slicer, "snapmaker-orca", StringComparison.OrdinalIgnoreCase)
                 ? "Snapmaker Orca writes no CLI log file for this slice."
-                : "See the slice log on the shop PC.";
+                : string.Equals(run.Job.Slicer, "bambu-studio", StringComparison.OrdinalIgnoreCase)
+                    ? "Bambu Studio writes no CLI log file for this slice."
+                    : "See the slice log on the shop PC.";
             Program.Log($"[litho] Job {run.Job.JobId}: slicer exited with code {exitCode}. Failed; {logHint}");
             await ReportFailedAsync(run.Job, $"Slicer exited with code {exitCode}. {logHint}", ct);
             CleanupDir(run.WorkDir);

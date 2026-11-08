@@ -45,18 +45,23 @@
 //  - CLI flags are the OrcaSlicer/Bambu Studio family
 //    (OrcaSlicer wiki "CLI Mode" + Bambu Studio "Command
 //    Line Usage"): --load-settings, --load-filaments,
-//    --slice, --outputdir, --export-statistics, --logfile.
-//    Snapmaker Orca does NOT accept --export-statistics
-//    or --logfile (prints Usage + "setup params error",
-//    proven Nov 8, 2026 on 2.4.1), so this poller omits
-//    both flags for it. Snapmaker Orca's CLI also crashes
+//    --slice, --outputdir. --export-statistics and
+//    --logfile are OrcaSlicer-ONLY: Snapmaker Orca does
+//    NOT accept them (prints Usage + "setup params
+//    error", proven Nov 8, 2026 on 2.4.1), and Bambu
+//    Studio 02.09.01.70 does NOT accept them either —
+//    it prints its --help text and exits -2 (proven Nov
+//    8, 2026; its --help flag table lists neither flag).
+//    So this poller adds both flags only for upstream
+//    OrcaSlicer. Snapmaker Orca's CLI also crashes
 //    on 3MF input carrying plate data (upstream issue
 //    #935, exit -1073741819, proven Nov 8, 2026: mount
 //    3MF crashed, mount STL sliced exit 0), so for
 //    Snapmaker Orca the input 3MF is converted to STL
 //    first (tools\3mf-to-stl.py, Python + trimesh) and
 //    the STL is fed to the slicer. Bambu Studio and
-//    OrcaSlicer keep the 3MF input and the full flag set.
+//    OrcaSlicer keep the 3MF input; only OrcaSlicer
+//    gets the full flag set.
 
 using System.Diagnostics;
 using System.IO.Compression;
@@ -232,10 +237,15 @@ public sealed class SlicePoller
         var args = $"\"{sliceInputPath}\" --load-settings \"{printerJson};{processJson}\" " +
             $"--load-filaments \"{filamentJson}\" --slice {job.Plate} " +
             $"--outputdir \"{outDir}\"";
-        // Snapmaker Orca's CLI rejects --export-statistics and
-        // --logfile ("setup params error", proven Nov 8, 2026
-        // on 2.4.1). Bambu Studio and OrcaSlicer accept them.
-        if (!isSnapmakerOrca)
+        // --export-statistics and --logfile are
+        // OrcaSlicer-only. Snapmaker Orca rejects them
+        // ("setup params error", proven Nov 8, 2026 on
+        // 2.4.1), and Bambu Studio 02.09.01.70 rejects
+        // them too — it prints its --help text and exits
+        // -2 (proven Nov 8, 2026; its --help flag table
+        // lists neither flag). Add both flags only for
+        // upstream OrcaSlicer.
+        if (slicer == "orcaslicer")
             args += $" --export-statistics --logfile \"{logPath}\"";
         // Log the exact command line before starting: when
         // a slicer exits with a bare code (Bambu Studio -2,
