@@ -524,28 +524,37 @@ public sealed class BambuAdapter : IPrinterAdapter
             return (false, $"FTPS upload to printer '{Name}' failed: {ex.Message}");
         }
     }
-    // P2S-START (2026.1106): the P2S rejects the P1-style
-    // project_file payload with 0500-4002 "Unsupported file path
-    // or name" (proven live Nov 5, 2026, five identical failures;
-    // the error is FRESH, 11 s after publish, not stale).
-    // bambu-printer-mcp PR #15 (merged 2026-09-27, v1.1.8),
-    // verified on a real P2S running firmware 01.02.00.00, shows
-    // the P2S only accepts the H2-style project_file:
-    // url ftp:///cache/<name> (upload stays at /cache/),
-    // project-length ams_mapping + parallel ams_mapping2,
-    // non-zero project_id/task_id/subtask_id, 0/1 int flags.
-    // Detection is PR #15's exactly: serial prefix "22E" or
-    // model name "p2s". All other Bambu models keep the legacy
-    // P1-style payload unchanged. The X2D is deliberately NOT
-    // included: its Nov 4 0500-4002 is confounded by the mangled
-    // filename (already repaired by RepairPlateFileName), it is
-    // dual-nozzle (different mapping semantics), and the driver
-    // routes it legacy — the X2D needs its own clean-filename
-    // retry first; if it still answers 0500-4002, extend this
-    // route to it with the dual-nozzle mapping work.
-    private bool UsesH2ProjectFile =>
-        (_cfg.Serial ?? "").StartsWith("22E", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(_cfg.Type, "p2s", StringComparison.OrdinalIgnoreCase);
+    // H2-ONLY (2026.1108, Marlena's decision): EVERY Bambu
+    // start uses the H2-style project_file payload — the legacy
+    // P1-style payload (url file:///sdcard/cache/<name>, md5 "",
+    // boolean flags, project_id/task_id/subtask_id "0", fixed
+    // ams_mapping [0,-1,-1,-1,-1]) is DELETED, so the old command
+    // can never be sent again. History: the P2S rejected the
+    // legacy payload with 0500-4002 (five identical failures)
+    // until it was moved to the H2 form Nov 5, 2026
+    // (bambu-printer-mcp PR #15, verified on a real P2S running
+    // firmware 01.02.00.00); the X2D's Nov 7 clean-filename
+    // retry (fresh hyphen-only plate, SHA-256 verified) still
+    // answered 0500-4002, fresh 8 s after print_started
+    // (print_error 83902466 = 0x05004002), so the X2D takes the
+    // same H2 route with the dual-nozzle mapping work below.
+    // The UsesH2ProjectFile gate is deleted with the legacy
+    // path. The fleet is P2S + X2D only, both H2-family — if a
+    // P1-series printer is ever added, its own start path must
+    // be re-introduced; the legacy form is gone, not preserved.
+    // Dual-nozzle differences live in IsDualNozzle /
+    // ReadNozzleMapping / the dual-nozzle form of
+    // H2Mapping2Entry below.
+
+    // Dual-nozzle Bambu (X2D): the H2 project_file carries the
+    // extra nozzle_mapping field and dual-nozzle mapping
+    // semantics. The serial prefix is the load-bearing check
+    // (the shop config's Type value for the X2D was not
+    // re-verified when this was written — "x2d" mirrors the
+    // P2S "p2s" pattern and LithophanePoller's "x2d" slug).
+    private bool IsDualNozzle =>
+        (_cfg.Serial ?? "").StartsWith("20P", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(_cfg.Type, "x2d", StringComparison.OrdinalIgnoreCase);
 
     // Plate metadata for the H2 start payload, read from the
     // downloaded .3mf at localPath. Returns (filamentCount,
@@ -646,13 +655,131 @@ public sealed class BambuAdapter : IPrinterAdapter
     // bridgeAmsMapping2Entry, single-nozzle form): tray values
     // 0..n map to ams_id = tray / 4, slot_id = tray % 4; -1 (and
     // the 255 virtual tray) mean unused.
-    private static object H2Mapping2Entry(int v)
+    // Dual-nozzle form (same function, dualNozzle = true):
+    // virtual trays carry slot_id 0 instead of echoing the
+    // virtual id ({254,0} / {255,0}), and AMS-HT trays
+    // (>= 128) carry {ams_id: value, slot_id: 0}. For real
+    // AMS trays (0..n) both forms agree ({ams_id: 0,
+    // slot_id: 0} for tray 0), so today's single-slot tray-0
+    // jobs are unaffected — the difference only matters for
+    // external-spool / AMS-HT jobs.
+    private static object H2Mapping2Entry(int v, bool dualNozzle = false)
     {
         if (v < 0) return new { ams_id = 255, slot_id = 255 };
-        if (v == 255) return new { ams_id = 255, slot_id = 255 };
-        if (v == 254) return new { ams_id = 254, slot_id = 254 };
-        if (v >= 128) return new { ams_id = 128, slot_id = v - 128 };
+        if (dualNozzle)
+        {
+            if (v == 255) return new { ams_id = 255, slot_id = 0 };
+            if (v == 254) return new { ams_id = 254, slot_id = 0 };
+            if (v >= 128) return new { ams_id = v, slot_id = 0 };
+        }
+        else
+        {
+            if (v == 255) return new { ams_id = 255, slot_id = 255 };
+            if (v == 254) return new { ams_id = 254, slot_id = 254 };
+            if (v >= 128) return new { ams_id = 128, slot_id = v - 128 };
+        }
         return new { ams_id = v / 4, slot_id = v % 4 };
+    }
+
+    // X2D nozzle_mapping (2026.1108): the raw MQTT
+    // project_file command on multi-extruder printers carries
+    // nozzle_mapping, a flat int array, 3MF filament slot ->
+    // physical nozzle (ChestnutLabs printer-protocol-orchard,
+    // protocols/bambu.md, "Print-time routing": "nozzle_mapping
+    // (flat int array, 3MF-slot -> physical nozzle) on
+    // multi-extruder / H2D only"). bambu-printer-mcp never
+    // constructs this value — it is a caller-supplied raw JSON
+    // string for FULU PrintParams / the native helper — so it
+    // is composed here from the plate's own slicer metadata.
+    // Composition (bambu-printer-mcp index.ts:3378 — "the gcode
+    // header's filament_map (1=left, 2=right) says which nozzle
+    // each filament was sliced for"; CHANGELOG 1.1.29 — "Bind
+    // each selected spool to the inspected plate's composed
+    // filament_map and physical_extruder_map"):
+    //   physical nozzle for slot i =
+    //     physical_extruder_map[filament_map[i] - 1]
+    // filament_map is 1-based (1 = left, 2 = right);
+    // physical_extruder_map is indexed by 1-based logical
+    // extruder minus 1 and holds 0-based physical nozzle ids.
+    // Verified against the real X2D collar plate
+    // (Ryobi-Stick-Collar-1x-Support.gcode.3mf):
+    //   filament_map = [1,1,1,1],
+    //   physical_extruder_map = [1,0]
+    //   -> nozzle_mapping = [1,1,1,1] (every slot -> physical
+    //   nozzle 1, the left/deputy nozzle; cross-checked by the
+    //   plate's start G-code, which heats T1:
+    //   M104 ... T{filament_map[0] % 2} = T1).
+    // The array is project-length, parallel to ams_mapping.
+    // Returns null when the maps cannot be read or fail
+    // validation — the caller must NOT guess a value.
+    // Never throws.
+    private static int[]? ReadNozzleMapping(string? localPath, int filamentCount)
+    {
+        if (string.IsNullOrWhiteSpace(localPath) || !File.Exists(localPath) || filamentCount < 1)
+            return null;
+        try
+        {
+            using var zip = new ZipArchive(File.OpenRead(localPath), ZipArchiveMode.Read);
+            // Bambu Studio writes the project settings at
+            // Metadata/project_settings.config (the reference's
+            // 3mf_parser.ts reads that path); fall back to the
+            // archive root for plates written otherwise.
+            var configEntry = zip.GetEntry("Metadata/project_settings.config")
+                ?? zip.GetEntry("project_settings.config");
+            if (configEntry is null) return null;
+            using var configReader = new StreamReader(configEntry.Open());
+            using var doc = JsonDocument.Parse(configReader.ReadToEnd());
+            if (!doc.RootElement.TryGetProperty("filament_map", out var mapEl) || mapEl.ValueKind != JsonValueKind.Array)
+                return null;
+            if (!doc.RootElement.TryGetProperty("physical_extruder_map", out var physEl) || physEl.ValueKind != JsonValueKind.Array)
+                return null;
+            var filamentMap = ParseIntArray(mapEl);
+            var physMap = ParseIntArray(physEl);
+            if (filamentMap is null || physMap is null) return null;
+            if (filamentMap.Length < filamentCount) return null;
+            if (physMap.Length < 2) return null;
+            var result = new int[filamentCount];
+            for (var i = 0; i < filamentCount; i++)
+            {
+                var logical = filamentMap[i]; // 1-based: 1 = left, 2 = right
+                if (logical < 1 || logical > 2) return null;
+                if (logical - 1 >= physMap.Length) return null;
+                var physical = physMap[logical - 1];
+                if (physical < 0 || physical > 1) return null;
+                result[i] = physical;
+            }
+            return result;
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"[Bambu] Nozzle mapping read failed ({ex.GetType().Name}: {ex.Message}); no nozzle_mapping will be sent.");
+            return null;
+        }
+    }
+
+    // Parse a JSON array whose elements are ints or int-valued
+    // strings (Bambu Studio writes filament_map /
+    // physical_extruder_map as string arrays, e.g. ["1","1"]).
+    // Returns null if any element is neither.
+    private static int[]? ParseIntArray(JsonElement el)
+    {
+        var list = new List<int>();
+        foreach (var item in el.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.Number && item.TryGetInt32(out var n))
+            {
+                list.Add(n);
+                continue;
+            }
+            if (item.ValueKind == JsonValueKind.String &&
+                int.TryParse(item.GetString(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var s))
+            {
+                list.Add(s);
+                continue;
+            }
+            return null;
+        }
+        return list.ToArray();
     }
 
     // H2 mapping (bambu-printer-mcp PR #15 / current main):
@@ -665,7 +792,7 @@ public sealed class BambuAdapter : IPrinterAdapter
     // map to tray 0 here, preserving current behaviour. Wiring
     // the job's AMS slot through to the start payload is a
     // separate follow-up.
-    private static (int[] Mapping, object[] Mapping2) BuildH2Mapping(int filamentCount, int[] usedPositions)
+    private static (int[] Mapping, object[] Mapping2) BuildH2Mapping(int filamentCount, int[] usedPositions, bool dualNozzle = false)
     {
         var baseMapping = new int[Math.Max(filamentCount, 1)];
         for (var i = 0; i < baseMapping.Length; i++) baseMapping[i] = -1;
@@ -675,8 +802,29 @@ public sealed class BambuAdapter : IPrinterAdapter
         }
         var projLen = Math.Max(Math.Max(filamentCount, baseMapping.Length), 1);
         var mapping = new int[projLen];
-        for (var i = 0; i < projLen; i++) mapping[i] = i < baseMapping.Length ? baseMapping[i] : -1;
-        var mapping2 = mapping.Select(v => H2Mapping2Entry(v)).ToArray();
+        for (var i = 0; i < projLen; i++)
+        {
+            var v = i < baseMapping.Length ? baseMapping[i] : -1;
+            // Dual-nozzle flat form (bambu-printer-mcp
+            // amsMappingDualNozzle / bridgeAmsMappingValue):
+            // virtual trays 254/255 are -1 here — their real
+            // routing lives in ams_mapping2 only. Unreachable
+            // today (the tray is hardcoded to 0 above); the
+            // guard exists so the future AMS-slot wiring gets
+            // the dual form right.
+            mapping[i] = (dualNozzle && (v == 254 || v == 255)) ? -1 : v;
+        }
+        // mapping2 is built from the PRE-rewrite tray values —
+        // the reference's nativeAmsMapping2(mapping, dualNozzle)
+        // takes the raw mapping, not the flat -1 form — so a
+        // virtual tray still reaches {254,0} / {255,0} here
+        // instead of collapsing to {255,255}.
+        var mapping2 = new object[projLen];
+        for (var i = 0; i < projLen; i++)
+        {
+            var v = i < baseMapping.Length ? baseMapping[i] : -1;
+            mapping2[i] = H2Mapping2Entry(v, dualNozzle);
+        }
         return (mapping, mapping2);
     }
 
@@ -694,13 +842,12 @@ public sealed class BambuAdapter : IPrinterAdapter
         // job if it did not within two minutes.
         var isPlateFile = startFileName.EndsWith(".gcode.3mf", StringComparison.OrdinalIgnoreCase) || startFileName.EndsWith(".3mf", StringComparison.OrdinalIgnoreCase);
         var startParam = isPlateFile ? "Metadata/plate_1.gcode" : startFileName;
-        // The P2S takes the H2-style project_file (see
-        // UsesH2ProjectFile); every other Bambu keeps the legacy
-        // P1-style payload below, unchanged, so this change cannot
-        // regress them. (Legacy field set and values are identical
-        // to before; only the JSON serialization order differs,
-        // which JSON parsers ignore.)
-        var isH2 = UsesH2ProjectFile;
+        // Every Bambu start uses the H2-style project_file
+        // payload (see the H2-ONLY note above) — there is no
+        // legacy path anymore. The Worker verifies via status
+        // polls that printing actually began, and fails the job
+        // if it did not within two minutes.
+        var isDualNozzle = IsDualNozzle;
         var print = new Dictionary<string, object>
         {
             ["sequence_id"] = "1",
@@ -710,63 +857,74 @@ public sealed class BambuAdapter : IPrinterAdapter
             ["bed_type"] = "auto",
             ["use_ams"] = true,
         };
-        if (isH2)
+        // Submission id: bambu-printer-mcp's exactly —
+        // String(Date.now() & 0x7fffffff), the same value for
+        // project_id, task_id and subtask_id. Guard the
+        // (vanishingly unlikely) zero so the ids are never "0".
+        var rawId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() & 0x7fffffff;
+        var submissionId = (rawId == 0 ? 1 : rawId).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var (filamentCount, usedPositions, md5) = isPlateFile
+            ? ReadPlateMetadata(localPath)
+            : (1, new[] { 0 }, "");
+        var (mapping, mapping2) = BuildH2Mapping(filamentCount, usedPositions, isDualNozzle);
+        // nozzle_mapping is logged below when present; the
+        // log line reads it.
+        var nozzleLog = "";
+        if (isDualNozzle)
         {
-            // Submission id: bambu-printer-mcp's exactly —
-            // String(Date.now() & 0x7fffffff), the same value for
-            // project_id, task_id and subtask_id. Guard the
-            // (vanishingly unlikely) zero so the ids are never "0".
-            var rawId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() & 0x7fffffff;
-            var submissionId = (rawId == 0 ? 1 : rawId).ToString(System.Globalization.CultureInfo.InvariantCulture);
-            var (filamentCount, usedPositions, md5) = isPlateFile
-                ? ReadPlateMetadata(localPath)
-                : (1, new[] { 0 }, "");
-            var (mapping, mapping2) = BuildH2Mapping(filamentCount, usedPositions);
-            print["url"] = "ftp:///cache/" + startFileName;
-            print["md5"] = md5;
-            // 0/1 int flags on the H2 route (the driver sends ints,
-            // not booleans). bed_leveling 1 + auto_bed_leveling 1
-            // preserve the bridge's existing always-level intent as
-            // a coherent pair; Studio's own default is (0, 2)
-            // ("auto") if the owner ever wants that instead.
-            // nozzle_offset_cali 2 is Studio's "auto" default for a
-            // single-nozzle P2S. subtask_name drops the ".3mf", as
-            // the driver does.
-            print["timelapse"] = 0;
-            print["bed_leveling"] = 1;
-            print["auto_bed_leveling"] = 1;
-            print["flow_cali"] = 0;
-            print["vibration_cali"] = 0;
-            print["layer_inspect"] = 0;
-            print["cfg"] = "0";
-            print["extrude_cali_flag"] = 0;
-            print["extrude_cali_manual_mode"] = 0;
-            print["nozzle_offset_cali"] = 2;
-            print["subtask_name"] = Regex.Replace(startFileName, @"\.3mf$", "", RegexOptions.IgnoreCase);
-            print["profile_id"] = "0";
-            print["project_id"] = submissionId;
-            print["task_id"] = submissionId;
-            print["subtask_id"] = submissionId;
-            print["ams_mapping"] = mapping;
-            print["ams_mapping2"] = mapping2;
-            Program.Log($"[Bambu] StartPrint H2-style (P2S) submissionId={submissionId} filaments={filamentCount} mapping=[{string.Join(",", mapping)}] md5={(string.IsNullOrEmpty(md5) ? "(empty)" : "set")}");
+            // Dual-nozzle printers (X2D) need nozzle_mapping:
+            // a flat int array, 3MF filament slot -> physical
+            // nozzle, derived from the plate's own slicer
+            // metadata (see ReadNozzleMapping). If it cannot
+            // be derived, REFUSE the dispatch instead of
+            // sending a payload the printer is likely to
+            // reject with 0500-4002 — and never guess a value.
+            // A non-plate file has no plate metadata to
+            // derive from; Bambu prints only go as packaged
+            // .gcode.3mf plates, so that case is refused too.
+            int[]? nozzleMapping = null;
+            if (isPlateFile)
+                nozzleMapping = ReadNozzleMapping(localPath, filamentCount);
+            if (nozzleMapping is null)
+            {
+                var reason = isPlateFile
+                    ? $"Cannot determine nozzle_mapping for dual-nozzle printer '{Name}' from plate '{startFileName}': project_settings.config is missing or its filament_map / physical_extruder_map are unreadable. Re-slice the plate in Bambu Studio and retry."
+                    : $"Cannot determine nozzle_mapping for dual-nozzle printer '{Name}': '{startFileName}' is not a packaged .gcode.3mf plate. Send a packaged plate instead.";
+                Program.Log($"[Bambu] StartPrint refused: {reason}");
+                return (false, reason);
+            }
+            print["nozzle_mapping"] = nozzleMapping;
+            nozzleLog = $" nozzle_mapping=[{string.Join(",", nozzleMapping)}]";
         }
-        else
-        {
-            print["url"] = "file:///sdcard/cache/" + startFileName;
-            print["md5"] = "";
-            print["timelapse"] = false;
-            print["bed_leveling"] = true;
-            print["flow_cali"] = false;
-            print["vibration_cali"] = false;
-            print["layer_inspect"] = false;
-            print["subtask_name"] = startFileName;
-            print["project_id"] = "0";
-            print["task_id"] = "0";
-            print["subtask_id"] = "0";
-            print["ams_mapping"] = new[] { 0, -1, -1, -1, -1 };
-            print["ams_mapping2"] = new[] { new { ams_id = 0, slot_id = 0 } };
-        }
+        print["url"] = "ftp:///cache/" + startFileName;
+        print["md5"] = md5;
+        // 0/1 int flags here (the driver sends ints,
+        // not booleans). bed_leveling 1 + auto_bed_leveling 1
+        // preserve the bridge's existing always-level intent as
+        // a coherent pair; Studio's own default is (0, 2)
+        // ("auto") if the owner ever wants that instead.
+        // nozzle_offset_cali 2 is Studio's "auto" default for a
+        // single-nozzle P2S. subtask_name drops the ".3mf", as
+        // the driver does.
+        print["timelapse"] = 0;
+        print["bed_leveling"] = 1;
+        print["auto_bed_leveling"] = 1;
+        print["flow_cali"] = 0;
+        print["vibration_cali"] = 0;
+        print["layer_inspect"] = 0;
+        print["cfg"] = "0";
+        print["extrude_cali_flag"] = 0;
+        print["extrude_cali_manual_mode"] = 0;
+        print["nozzle_offset_cali"] = 2;
+        print["subtask_name"] = Regex.Replace(startFileName, @"\.3mf$", "", RegexOptions.IgnoreCase);
+        print["profile_id"] = "0";
+        print["project_id"] = submissionId;
+        print["task_id"] = submissionId;
+        print["subtask_id"] = submissionId;
+        print["ams_mapping"] = mapping;
+        print["ams_mapping2"] = mapping2;
+        var h2Label = isDualNozzle ? "X2D" : "P2S";
+        Program.Log($"[Bambu] StartPrint H2-style ({h2Label}) submissionId={submissionId} filaments={filamentCount} mapping=[{string.Join(",", mapping)}]{nozzleLog} md5={(string.IsNullOrEmpty(md5) ? "(empty)" : "set")}");
         var command = new { print };
         // 2026.1105-push-log: concise StartPrint record (file / subtask_name / param).
         Program.Log($"[Bambu] StartPrint publish: file={startFileName} subtask_name={print["subtask_name"]} param={startParam}");
