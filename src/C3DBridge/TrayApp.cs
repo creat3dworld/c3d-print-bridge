@@ -1920,10 +1920,13 @@ public sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        var confirm = MessageBox.Show(
-            "Download Google Drive for Desktop from Google and install it?\n\nThis installs Google's official sync app (about a 277 MB download), so this PC can read its Drive files straight from the file system. Installing is silent — no prompts — but you will be asked to approve an administrator prompt. Signing in to Google inside the app afterwards is a separate step you do yourself.",
-            "C3D Print Bridge — Install Google Drive for Desktop", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-        if (confirm != DialogResult.Yes) return;
+        // No confirm dialog here by design: the tray menu click
+        // itself is the consent — same as double-clicking a
+        // Ninite installer. The one prompt the user still sees
+        // is Windows' own administrator (UAC) prompt when the
+        // installer runs elevated; the bridge never asks twice.
+        // Signing in to Google inside the app afterwards is a
+        // separate step the owner does themselves.
 
         // Download + install run on a worker thread so the tray
         // icon stays responsive while they run — same reason as

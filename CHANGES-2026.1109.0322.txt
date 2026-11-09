@@ -1,0 +1,31 @@
+C3D Print Bridge - version 2026.1109.0322-drive-install-one-prompt
+What is new in this version (vs 2026.1109.0106-first-run-provisioning):
+- Drive for Desktop install prompts once, like Ninite (Nov 8-9,
+  2026): the tray menu item "Install Google Drive for Desktop…"
+  no longer shows its own Yes/No confirm box. Clicking the menu
+  item IS the consent — the download starts at once, exactly like
+  double-clicking a Ninite installer. The one prompt the user
+  still sees is Windows' own administrator (UAC) prompt when the
+  installer runs elevated; the bridge never asks twice, and no
+  Windows security prompt is bypassed. The result box at the end
+  ("installed" / what went wrong) is unchanged, as is the
+  already-installed report. Signing in to Google inside Drive
+  for Desktop afterwards is still a separate step the owner does
+  themselves.
+- Honest limit: the bridge launches exactly one elevated process
+  (GoogleDriveSetup.exe, --silent, Verb="runas"). What happens
+  inside Google's closed installer cannot be verified from the
+  bridge code — if a second prompt appears, it comes from
+  Windows (SmartScreen) or from Google's installer itself, not
+  from the bridge. The bridge adds zero prompts of its own
+  before the UAC prompt.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.
+  3. A fresh install from the dashboard needs no setup step at
+     all: the packaged bridge-setup.json provisions the key on
+     first start. A GitHub-file install uses the pairing code:
+     dashboard -> Install bridge client -> copy the code, then
+     on the PC run `C3DBridge.exe setup --pairing-code <code>`.
+     The old `C3DBridge.exe setup` paste-the-key flow still works.
