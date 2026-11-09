@@ -31,6 +31,16 @@ public sealed class DashboardClient : IDisposable
     private readonly string _bridgeName;
     private string? _apiKey;
     private bool _keyRejected;
+    // MULTI-BRIDGE (2026.1108, slice priority queue): this
+    // bridge's slice-machine identity, from bridge-config.json
+    // (machine_id / machine_name). Null = legacy mode: no
+    // machine_id is sent on any request and the slice_machine
+    // block is omitted, so the bridge behaves exactly as the
+    // single-bridge bridge did before. _config is kept only
+    // for the slicer-presence check in the heartbeat block.
+    private readonly string? _machineId;
+    private readonly string? _machineName;
+    private readonly BridgeConfig? _config;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -39,12 +49,24 @@ public sealed class DashboardClient : IDisposable
 
     public bool KeyRejected => _keyRejected;
     public bool HasKey => !string.IsNullOrEmpty(_apiKey);
+    /// <summary>Normalized machine_id, or null in legacy mode.</summary>
+    public string? MachineId => _machineId;
+    public bool HasMachineId => _machineId is not null;
 
-    public DashboardClient(string baseUrl, string bridgeName, string? apiKey)
+    public DashboardClient(string baseUrl, string bridgeName, string? apiKey, BridgeConfig? config = null)
     {
         _baseUrl = baseUrl.TrimEnd('/');
         _bridgeName = bridgeName;
         _apiKey = apiKey;
+        _config = config;
+        if (config is not null)
+        {
+            var (id, problem) = MachineInfo.NormalizeMachineId(config.MachineId);
+            _machineId = id;
+            _machineName = string.IsNullOrWhiteSpace(config.MachineName) ? null : config.MachineName!.Trim();
+            if (problem is not null)
+                Program.Log($"WARNING: {problem}; running in legacy mode (no machine_id sent, all unassigned slice jobs claimed as before).");
+        }
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("C3DBridge/1.0");
     }
@@ -163,24 +185,46 @@ public sealed class DashboardClient : IDisposable
         }
     }
 
-    public async Task<bool> HeartbeatAsync(CancellationToken ct)
+    /// <summary>MULTI-BRIDGE (2026.1108): slice_status is the
+    /// live slice state ("idle" / "busy") the slice_machine
+    /// block reports, so the dashboard knows this machine is
+    /// free to take the next slice job. In legacy mode (no
+    /// machine_id) the block is omitted entirely and the
+    /// heartbeat is byte-for-byte today's.</summary>
+    public async Task<bool> HeartbeatAsync(CancellationToken ct, string? sliceStatus = null)
     {
-        var (ok, _, body) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/heartbeat",
-            new { bridge_name = _bridgeName, version = Program.Version, timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds() }, ct);
+        var payload = new Dictionary<string, object?>
+        {
+            ["bridge_name"] = _bridgeName,
+            ["version"] = Program.Version,
+            ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        };
+        var block = SliceMachineBlock(sliceStatus);
+        if (block is not null) payload["slice_machine"] = block;
+        var (ok, _, body) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/heartbeat", payload, ct);
         if (ok) AdoptRotatedKey(body);
         return ok;
     }
 
-    public async Task<bool> PushStatusAsync(IReadOnlyList<PrinterStatus> printers, int queueLength, CancellationToken ct)
+    /// <summary>The slice_machine heartbeat block, or null in
+    /// legacy mode (no machine_id configured) — the caller
+    /// omits the key entirely then, so the dashboard sees
+    /// exactly today's heartbeat.</summary>
+    private object? SliceMachineBlock(string? sliceStatus)
     {
-        var (ok, _, body) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/status",
-            new
+        if (_machineId is null || _config is null) return null;
+        return MachineInfo.BuildSliceMachineBlock(_machineId, _machineName, _config, sliceStatus);
+    }
+
+    public async Task<bool> PushStatusAsync(IReadOnlyList<PrinterStatus> printers, int queueLength, CancellationToken ct, string? sliceStatus = null)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["bridge_name"] = _bridgeName,
+            ["version"] = Program.Version,
+            ["queue_length"] = queueLength,
+            ["printers"] = printers.Select(p => new
             {
-                bridge_name = _bridgeName,
-                version = Program.Version,
-                queue_length = queueLength,
-                printers = printers.Select(p => new
-                {
                     name = p.Name,
                     type = p.Type,
                     ip = p.Ip,
@@ -260,7 +304,15 @@ public sealed class DashboardClient : IDisposable
                         started = h.Started,
                     }),
                 }),
-            }, ct);
+            };
+        // MULTI-BRIDGE (2026.1108): the status route runs the
+        // same dashboard heartbeat handler, so the machine
+        // block rides here too — the machine's last_seen stays
+        // fresh on the 30-second status cadence, not just the
+        // 60-second heartbeat. Omitted in legacy mode.
+        var statusBlock = SliceMachineBlock(sliceStatus);
+        if (statusBlock is not null) payload["slice_machine"] = statusBlock;
+        var (ok, _, body) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/status", payload, ct);
         if (ok) AdoptRotatedKey(body);
         return ok;
     }
@@ -447,10 +499,18 @@ public sealed class DashboardClient : IDisposable
 
     /// <summary>AUTO-START BUILD: poll GET farm/slice-jobs for
     /// pending in-dashboard slice requests. Returns null on
-    /// any failure (caller logs the reason).</summary>
+    /// any failure (caller logs the reason). MULTI-BRIDGE
+    /// (2026.1108): a bridge with a machine_id asks with
+    /// ?machine_id=&lt;id&gt; and the dashboard serves only the
+    /// pending jobs assigned to that machine; a legacy bridge
+    /// (no machine_id) gets only unassigned jobs — exactly
+    /// today's behavior — so a job another machine already
+    /// owns is never served twice.</summary>
     public async Task<(List<SliceJob>? Jobs, string? Problem)> PollSliceJobsAsync(CancellationToken ct)
     {
-        var (ok, status, body) = await SendAsync(HttpMethod.Get, "/wp-json/c3d-shipping/v1/farm/slice-jobs", null, ct);
+        var url = "/wp-json/c3d-shipping/v1/farm/slice-jobs"
+            + (_machineId is null ? "" : "?machine_id=" + Uri.EscapeDataString(_machineId));
+        var (ok, status, body) = await SendAsync(HttpMethod.Get, url, null, ct);
         if (!ok)
         {
             if (status == System.Net.HttpStatusCode.NotFound)
@@ -484,20 +544,29 @@ public sealed class DashboardClient : IDisposable
     /// + file_name + sliced_for carried) or "failed" (reason
     /// carried, no file). The dashboard saves a done file
     /// as the library entry's sliced attachment; a failed
-    /// slice never attaches anything.</summary>
+    /// slice never attaches anything. MULTI-BRIDGE
+    /// (2026.1108): status "started" is the claim — the
+    /// bridge reports it the moment a slice starts, the
+    /// dashboard marks the job 'slicing' with claimed_at,
+    /// and the first claim wins, so two bridges never slice
+    /// the same job. Every report carries this bridge's
+    /// machine_id when configured; in legacy mode none is
+    /// sent and the job keeps its assignment (or stays
+    /// unassigned, as today).</summary>
     public async Task<bool> ReportSliceAsync(string sliceJobId, string status, string reason,
         string? gcodeBase64, string? fileName, string? slicedFor, CancellationToken ct)
     {
-        var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/slice-report",
-            new
-            {
-                slice_job_id = sliceJobId,
-                status,
-                reason,
-                gcode_base64 = gcodeBase64,
-                file_name = fileName,
-                sliced_for = slicedFor,
-            }, ct);
+        var payload = new Dictionary<string, object?>
+        {
+            ["slice_job_id"] = sliceJobId,
+            ["status"] = status,
+            ["reason"] = reason,
+            ["gcode_base64"] = gcodeBase64,
+            ["file_name"] = fileName,
+            ["sliced_for"] = slicedFor,
+        };
+        if (_machineId is not null) payload["machine_id"] = _machineId;
+        var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/slice-report", payload, ct);
         return ok;
     }
 

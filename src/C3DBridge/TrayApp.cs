@@ -1752,7 +1752,7 @@ public sealed class TrayApplicationContext : ApplicationContext
                 return;
             }
             var apiKey = Config.ReadKey();
-            using var dashboard = new DashboardClient(cfg.DashboardBaseUrl, cfg.BridgeName, apiKey);
+            using var dashboard = new DashboardClient(cfg.DashboardBaseUrl, cfg.BridgeName, apiKey, cfg);
             var registry = new PrinterRegistry(cfg.Printers);
             try { await new Worker(cfg, registry, dashboard).RunAsync(ct); }
             catch (OperationCanceledException) { /* restart or exit */ }

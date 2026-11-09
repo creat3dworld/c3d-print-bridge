@@ -1,0 +1,27 @@
+C3D Print Bridge - version 2026.1108.1955-machine-id
+What is new in this version (vs 2026.1030.1854-rtsp):
+- Multi-bridge slicing (slice priority queue, Nov 8, 2026):
+  two bridges can now run side by side without fighting over
+  the same slice jobs. Each bridge identifies itself with a
+  machine_id in bridge-config.json ("3d1pc" for the high-power
+  PC, "3d2pc" for the shop PC), sends it on every dashboard
+  request, polls slice jobs with ?machine_id=<id> (the
+  dashboard serves only jobs assigned to that machine), claims
+  each slice the moment it starts with a 'started' report
+  (first claim wins), and reports its hardware specs + live
+  idle/busy slice status in a slice_machine heartbeat block
+  so the dashboard's Slice priority card shows the machine
+  online. A bridge with no machine_id behaves exactly as
+  before (legacy mode: no machine_id sent, all unassigned
+  pending slice jobs claimed) — the shop PC keeps working
+  untouched until its config is updated. No change to print
+  dispatch, bed/AMS gates, or label handling.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.
+  3. To give this bridge an identity, edit bridge-config.json and
+     set "machine_id" (e.g. "3d1pc") and "machine_name" (e.g.
+     "3d1PC"), then restart the bridge (tray: Restart, or restart
+     the "C3D Print Bridge" scheduled task). The machine appears
+     in the dashboard's Slice priority list on its next heartbeat.

@@ -97,6 +97,13 @@ public sealed class Worker
         _ocrPoller = new OcrPoller(dashboard);
     }
 
+    /// <summary>MULTI-BRIDGE (2026.1108): the live slice state
+    /// the heartbeat/status slice_machine block reports —
+    /// "busy" while SlicePoller has a slice running, else
+    /// "idle" — so the dashboard knows this machine is free
+    /// to take the next slice job.</summary>
+    private string SliceStatus() => _slicePoller.IsSlicing ? "busy" : "idle";
+
     public async Task RunAsync(CancellationToken ct)
     {
         Program.Log($"Bridge '{_cfg.BridgeName}' running: {_printers.All.Count} printer(s) configured, dashboard {_cfg.DashboardBaseUrl}.");
@@ -230,7 +237,7 @@ public sealed class Worker
                         }
                     }
                     if (_dashboard.HasKey)
-                        await _dashboard.PushStatusAsync(statuses.Values.ToList(), queueLength, ct);
+                        await _dashboard.PushStatusAsync(statuses.Values.ToList(), queueLength, ct, SliceStatus());
                     else
                         foreach (var st in statuses.Values)
                             Program.Log($"[local] {st.Name}: {st.State} {st.Detail}");
@@ -254,7 +261,7 @@ public sealed class Worker
                 if (_dashboard.HasKey && now - lastHeartbeat >= TimeSpan.FromSeconds(_cfg.HeartbeatIntervalSeconds))
                 {
                     lastHeartbeat = now;
-                    await _dashboard.HeartbeatAsync(ct);
+                    await _dashboard.HeartbeatAsync(ct, SliceStatus());
                 }
 
                 // 3. Job poll + execution + monitoring.

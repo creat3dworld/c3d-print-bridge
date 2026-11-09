@@ -33,7 +33,7 @@ namespace C3DBridge;
 
 public static class Program
 {
-    public const string Version = "2026.1030.1854-rtsp";
+    public const string Version = "2026.1108.1955-machine-id";
 
     // Single-instance, newest-wins: only one bridge runs at a time.
     // A running instance writes its version + pid to a temp file.
@@ -236,7 +236,7 @@ public static class Program
         }
 
         var apiKey = Config.ReadKey();
-        using var dashboard = new DashboardClient(cfg.DashboardBaseUrl, cfg.BridgeName, apiKey);
+        using var dashboard = new DashboardClient(cfg.DashboardBaseUrl, cfg.BridgeName, apiKey, cfg);
         var registry = new PrinterRegistry(cfg.Printers);
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };

@@ -91,6 +91,13 @@ public sealed class SlicePoller
         _config = config;
     }
 
+    /// <summary>MULTI-BRIDGE (2026.1108): true while a slice
+    /// is running on this bridge. The Worker reports it as
+    /// the slice_machine block's slice_status ("busy" /
+    /// "idle"), so the dashboard knows this machine is free
+    /// to take the next slice job.</summary>
+    public bool IsSlicing => _running is not null;
+
     public async Task PollAsync(CancellationToken ct)
     {
         if (!_dashboard.HasKey)
@@ -285,6 +292,20 @@ public sealed class SlicePoller
         var stderrTask = proc.StandardError.ReadToEndAsync();
         _running = new RunningSlice(job, proc, workDir, outDir, DateTime.UtcNow, stdoutTask, stderrTask);
         Program.Log($"[slice] Job {job.SliceJobId}: slicing started with '{slicer}' for model '{job.TargetModel}', plate {job.Plate} (runs in the background; status polls continue).");
+        // MULTI-BRIDGE (2026.1108): claim the job the moment
+        // slicing starts, so the dashboard marks it 'slicing'
+        // and no second bridge can take it (first claim wins).
+        // The claim carries this bridge's machine_id when
+        // configured; in legacy mode it carries none and the
+        // job keeps its assignment (or stays unassigned, as
+        // today). A claim that fails to reach the dashboard
+        // is logged, not fatal: the job is assigned to this
+        // machine, so the next poll serves it to this bridge
+        // only, and the running slice still reports
+        // done/failed when it finishes.
+        var claimed = await _dashboard.ReportSliceAsync(job.SliceJobId, "started", "", null, null, null, ct);
+        if (!claimed)
+            Program.Log($"[slice] Job {job.SliceJobId}: the 'started' claim did not reach the dashboard; the slice is still running locally and will report done/failed when it finishes.");
     }
 
     private async Task CheckRunningAsync(CancellationToken ct)

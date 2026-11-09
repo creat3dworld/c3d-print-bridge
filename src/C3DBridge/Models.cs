@@ -120,6 +120,26 @@ public sealed record BridgeConfig
 {
     [JsonPropertyName("dashboard_base_url")] public string DashboardBaseUrl { get; init; } = "https://creat3dworld.com";
     [JsonPropertyName("bridge_name")] public string BridgeName { get; init; } = "shop-pc";
+    /// <summary>MULTI-BRIDGE (2026.1108, slice priority queue) —
+    /// this bridge's slice-machine identity, e.g. "3d1pc" (the
+    /// high-power PC, #1) or "3d2pc" (the shop PC, #2). Sent as
+    /// machine_id on every dashboard request when set, and
+    /// reported in the slice_machine heartbeat block so the
+    /// dashboard's Slice priority card shows this machine
+    /// online with its specs. Empty/absent = LEGACY mode: no
+    /// machine_id is sent anywhere, the bridge claims all
+    /// unassigned pending slice jobs, exactly as the
+    /// single-bridge bridge behaved before — the shop PC keeps
+    /// working untouched until its config is updated. A value
+    /// with characters outside [a-z0-9_-] also falls back to
+    /// legacy mode with a warning, never a broken id.</summary>
+    [JsonPropertyName("machine_id")] public string? MachineId { get; init; }
+    /// <summary>MULTI-BRIDGE (2026.1108) — display name for
+    /// the slice-machine record (e.g. "3d1PC"). Empty = the
+    /// machine_id itself is shown. Never a credential, never
+    /// sent anywhere except inside the slice_machine
+    /// heartbeat block.</summary>
+    [JsonPropertyName("machine_name")] public string? MachineName { get; init; }
     /// <summary>Seconds between status pushes. Default 30.</summary>
     [JsonPropertyName("status_interval_seconds")] public int StatusIntervalSeconds { get; init; } = 30;
     /// <summary>Seconds between job polls. Default 30.</summary>

@@ -74,6 +74,55 @@ Body: `{ "bridge_name": "shop-pc", "version": "1.0.0",
 Effect: dashboard updates its bridge heartbeat timestamp.
 Response: `200 { "ok": true }`.
 
+### Machine identity — multi-bridge slicing (2026.1108)
+
+Two bridges can run side by side (3d1PC #1, shop PC #2) without
+fighting over the same slice jobs. Each bridge identifies itself
+in `bridge-config.json`:
+
+```json
+{ "machine_id": "3d1pc", "machine_name": "3d1PC" }
+```
+
+- `machine_id` is the routing identity: lowercase, letters /
+  digits / `-` / `_` only (the dashboard's `sanitize_key`
+  alphabet). `3d1pc` = the high-power PC, `3d2pc` = the shop
+  PC. `machine_name` is the display name on the dashboard's
+  Slice priority card; empty means the id itself is shown.
+- **Legacy mode:** when `machine_id` is empty or absent, the
+  bridge sends no machine id on any request and behaves exactly
+  as the single-bridge bridge did before — it claims all
+  unassigned pending slice jobs. A machine id with characters
+  outside the alphabet also falls back to legacy mode with a
+  warning in `bridge.log`, never a broken id.
+- **Slice poll:** a bridge with a machine id asks
+  `GET /farm/slice-jobs?machine_id=<id>` and the dashboard
+  serves only the pending jobs assigned to that machine. A
+  legacy bridge gets only unassigned jobs, so a job another
+  machine already owns is never served twice.
+- **Claim:** the moment a slice starts, the bridge reports
+  `POST /farm/slice-report` with `status: "started"` (plus its
+  `machine_id` when configured). The dashboard marks the job
+  `slicing` with `claimed_at`; the first claim wins. Done and
+  failed reports carry the same `machine_id`.
+- **Heartbeat / status:** both carry a `slice_machine` block
+  (omitted entirely in legacy mode):
+  `{ "machine_id", "name", "cpu", "gpu", "ram", "storage",
+  "os", "slicers": ["bambu-studio", "snapmaker-orca",
+  "orcaslicer"], "slice_status": "idle" | "busy" }`.
+  Hardware strings are probed on the PC (CPU model + cores
+  from the registry, GPUs from the display class, RAM, fixed
+  drives, OS) and are reference only — routing uses the
+  priority order + live idle/busy, never the specs. A field
+  the bridge cannot read is `""` and the dashboard keeps its
+  stored value. `slice_status` is the live slice state: busy
+  while this bridge has a slice running, else idle.
+- The dashboard routes each slice job to the highest-ranked
+  machine that is online AND idle, one active slice per
+  machine; a machine that goes quiet for 10 minutes returns
+  its jobs to the queue. Full dashboard-side rules live in
+  the plugin's `class-c3d-slice-machines.php`.
+
 ### POST /bridge/status
 
 Body:
