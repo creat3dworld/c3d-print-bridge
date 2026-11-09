@@ -251,6 +251,16 @@ the new one is generated.
 **Revoke:** dashboard → Revoke key. Every bridge request is then
 refused until a new key is generated and stored on the PC.
 
+**New installs (Nov 2026) — no key to paste:** a bridge installed
+from the dashboard's **Install bridge client** button comes
+prepackaged — it provisions its own key on first start, nothing
+to type. A bridge installed from a GitHub file uses a pairing
+code instead: dashboard → Install bridge client → copy the
+one-time code, then on the PC run `C3DBridge.exe setup
+--pairing-code <code>` (codes are single-use, 30-minute expiry).
+Both flows are documented in `docs/PROTOCOL.md` ("First-run
+provisioning").
+
 ## Step 4 — Start it and verify it phones home
 
 The installer registered a Scheduled Task named **C3D Print

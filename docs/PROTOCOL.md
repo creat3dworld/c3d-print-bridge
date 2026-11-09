@@ -123,6 +123,70 @@ in `bridge-config.json`:
   its jobs to the queue. Full dashboard-side rules live in
   the plugin's `class-c3d-slice-machines.php`.
 
+### First-run provisioning — no typing or pasting a key (2026.1109)
+
+A new install gets its bridge key one of two ways. The
+dashboard-prepackaged installer is the PRIMARY route; the
+pairing-code exchange is the FALLBACK for a bridge installed
+from a GitHub file. Both end in the same state: the key in
+the restricted local key file (DPAPI on Windows), the
+dashboard URL + machine identity in `bridge-config.json`,
+and nothing secret ever logged or printed.
+
+**Prepackaged (primary):** the dashboard builds a one-time
+installer download that drops `bridge-setup.json` next to
+the exe:
+
+```json
+{ "dashboard_url": "https://creat3dworld.com",
+  "machine_id": "3d1pc", "machine_name": "3d1PC",
+  "bridge_key": "<64 hex chars>" }
+```
+
+On first start the bridge consumes it: stores the key via
+`StoreKey`, writes `dashboard_url` / `machine_id` /
+`machine_name` into `bridge-config.json` (preserving
+printers, slicer paths, and every other field), deletes
+`bridge-setup.json`, and logs that provisioning completed.
+Only `bridge_key` is required — a missing `dashboard_url`
+means the default site, a missing `machine_id` means this
+PC's hostname slug, a missing `machine_name` means the
+hostname. A `bridge_key` that is not a dashboard-issued
+key (64 hex chars) is refused and the file is left in
+place. If a key is ALREADY stored, the setup file is
+ignored — a re-install can never overwrite the live key —
+and deleted when it carries a key, so no plaintext key
+lies around afterwards.
+
+**Pairing code (fallback):**
+
+```
+C3DBridge.exe setup --pairing-code <code>
+    [--dashboard <url>] [--machine <name>]
+```
+
+The bridge exchanges the single-use code at
+`POST {dashboard}/wp-json/c3d-shipping/v1/bridge/pairing/exchange`
+(no auth header — the code IS the auth):
+
+```json
+{ "code": "<single-use code>", "machine_id": "3d1pc", "machine_name": "3d1PC" }
+```
+
+`machine_id` is the lowercased hostname slug of `--machine`
+(or this PC's hostname when `--machine` is omitted);
+`--dashboard` defaults to `https://creat3dworld.com`.
+On success the dashboard returns `{ "bridge_key": "<64
+hex chars>", "machine_id": "...", "machine_name": "..." }`
+and the bridge stores the key and writes the identity into
+`bridge-config.json`, exactly as the prepackaged flow does.
+On ANY failure (bad/expired code, unreachable dashboard,
+unreadable reply, invalid key) it prints the exact error
+and exits non-zero, and NOTHING is stored — a partial key
+is never left behind. Codes are single-use and expire
+after 30 minutes; a spent code needs a fresh one from the
+dashboard.
+
 ### POST /bridge/status
 
 Body:

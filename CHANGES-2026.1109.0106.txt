@@ -1,0 +1,37 @@
+C3D Print Bridge - version 2026.1109.0106-first-run-provisioning
+What is new in this version (vs 2026.1108.1955-machine-id):
+- First-run provisioning (Nov 8-9, 2026): a new bridge install
+  gets its key with no typing or pasting, two ways.
+  PRIMARY — dashboard-prepackaged installer: the download drops
+  bridge-setup.json next to the exe ({dashboard_url, machine_id,
+  machine_name, bridge_key}); on first start the bridge stores
+  the key via StoreKey (DPAPI on Windows), writes the dashboard
+  URL + machine identity into bridge-config.json (printers,
+  slicer paths, and all other fields preserved), deletes
+  bridge-setup.json, and logs that provisioning completed. The
+  key value is never logged. If a key is already stored, the
+  setup file is ignored (a re-install never overwrites the live
+  key) and deleted when it carries a key, so no plaintext key
+  lies around. Only bridge_key is required; dashboard_url
+  defaults to https://creat3dworld.com, machine_id defaults to
+  this PC's hostname slug (e.g. 3d1pc), machine_name to the
+  hostname. A malformed key or setup file is refused and the
+  file is left in place.
+  FALLBACK — pairing code: `C3DBridge.exe setup --pairing-code
+  <code> [--dashboard <url>] [--machine <name>]` exchanges the
+  single-use code at POST {dashboard}/wp-json/c3d-shipping/v1/
+  bridge/pairing/exchange with {code, machine_id, machine_name}
+  and stores the returned bridge_key the same way. Any failure
+  prints the exact error and exits non-zero; nothing is stored,
+  so a bad code can never leave a partial key behind. Codes are
+  single-use and expire after 30 minutes.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.
+  3. A fresh install from the dashboard needs no setup step at
+     all: the packaged bridge-setup.json provisions the key on
+     first start. A GitHub-file install uses the pairing code:
+     dashboard -> Install bridge client -> copy the code, then
+     on the PC run `C3DBridge.exe setup --pairing-code <code>`.
+     The old `C3DBridge.exe setup` paste-the-key flow still works.

@@ -12,6 +12,14 @@
 //   C3DBridge setup --key K   Same, with the key as an argument
 //                             (note: the key may land in shell
 //                             history — prefer the prompt form).
+//   C3DBridge setup --pairing-code C [--dashboard U] [--machine N]
+//                             Pairing-code setup (fallback route):
+//                             exchange a single-use dashboard code
+//                             for the bridge key — no typing or
+//                             pasting a key. See FirstRunProvisioning.
+//                             A dashboard-prepackaged install needs
+//                             none of this: bridge-setup.json is
+//                             consumed automatically on first start.
 //   C3DBridge --self-test     Check config, key, dashboard reach,
 //                             bridge endpoints, and each printer.
 //   C3DBridge --discover      Probe this PC's own subnet for printer
@@ -33,7 +41,7 @@ namespace C3DBridge;
 
 public static class Program
 {
-    public const string Version = "2026.1108.1955-machine-id";
+    public const string Version = "2026.1109.0106-first-run-provisioning";
 
     // Single-instance, newest-wins: only one bridge runs at a time.
     // A running instance writes its version + pid to a temp file.
@@ -156,6 +164,13 @@ public static class Program
             return 0;
         }
 
+        // FIRST-RUN PROVISIONING (2026.1109): a dashboard-prepackaged
+        // bridge-setup.json (key + dashboard + machine identity) is
+        // consumed on first start. Skipped for --version, --discover,
+        // and the setup command itself (which provisions by hand).
+        if (!args.Contains("setup") && !args.Contains("--discover"))
+            FirstRunProvisioning.Apply();
+
         if (args.Contains("--configure") && OperatingSystem.IsWindows())
         {
             try { FreeConsole(); } catch { }
@@ -181,6 +196,17 @@ public static class Program
 
         if (args.Contains("setup"))
         {
+            // PAIRING CODE (2026.1109, fallback route): exchange a
+            // single-use dashboard code for the bridge key — no
+            // typing or pasting. Takes precedence over the
+            // masked-prompt flow below.
+            var pairingIndex = Array.IndexOf(args, "--pairing-code");
+            if (pairingIndex >= 0)
+            {
+                string? code = pairingIndex + 1 < args.Length ? args[pairingIndex + 1] : null;
+                return await FirstRunProvisioning.RunPairingSetupAsync(code ?? "", ArgValue(args, "--dashboard"), ArgValue(args, "--machine"));
+            }
+
             var keyIndex = Array.IndexOf(args, "--key");
             string? key = keyIndex >= 0 && keyIndex + 1 < args.Length ? args[keyIndex + 1] : null;
             if (key is null)
@@ -317,6 +343,14 @@ public static class Program
 
         Console.WriteLine(ok ? "Self-test done." : "Self-test done with failures above.");
         return ok ? 0 : 1;
+    }
+
+    /// <summary>Value after a named argument ("--dashboard <url>"),
+    /// or null when the argument is absent or last.</summary>
+    private static string? ArgValue(string[] args, string name)
+    {
+        var i = Array.IndexOf(args, name);
+        return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
     }
 
     private static string ReadMaskedLine()
