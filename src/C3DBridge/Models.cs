@@ -186,6 +186,19 @@ public sealed record BridgeConfig
     /// take before the bridge kills it and reports failure.
     /// Default 15.</summary>
     [JsonPropertyName("slice_timeout_minutes")] public int SliceTimeoutMinutes { get; init; } = 15;
+    /// <summary>BLENDER MESH TOOL (2026.1109.0163) — Blender
+    /// used to run the mesh-check / mesh-fix jobs from the
+    /// dashboard library. Default D:\C3D-Tools\Blender\
+    /// blender.exe on 3d1PC when unset. Empty or missing =
+    /// not configured (Blender jobs then fail honestly
+    /// instead of running a guessed binary).</summary>
+    [JsonPropertyName("blender_path")] public string? BlenderPath { get; init; }
+    /// <summary>BLENDER MESH TOOL (2026.1109.0163) — minutes
+    /// one Blender run may take before the bridge kills it
+    /// and reports failure. Default 15. A mesh_fix job runs
+    /// three Blender runs in sequence (report before, clean,
+    /// report after); the timeout applies to each run.</summary>
+    [JsonPropertyName("blender_timeout_minutes")] public int BlenderTimeoutMinutes { get; init; } = 15;
     /// <summary>LITHOPHANE (2026.1107) — Python used to run
     /// the mesh generator, and the mesh script itself.
     /// Defaults: "python" from PATH, and
@@ -360,6 +373,32 @@ public sealed record SliceJob
     [JsonPropertyName("preset_printer")] public string PresetPrinter { get; init; } = "";
     [JsonPropertyName("preset_process")] public string PresetProcess { get; init; } = "";
     [JsonPropertyName("preset_filament")] public string PresetFilament { get; init; } = "";
+}
+
+/// <summary>One Blender mesh job from GET farm/blender-jobs
+/// (2026.1109.0163-blender-mesh-tool). The dashboard records
+/// these when the Check mesh / Fix mesh button is used on a
+/// File Library entry; the bridge runs Blender headless on
+/// the library file and reports the result back. mesh_check
+/// runs mesh_report.py and reports the counts; mesh_fix runs
+/// mesh_report.py, clean_for_print.py (Recipe A), then
+/// mesh_report.py again, and reports before/after counts
+/// plus the fixed STL. Action values: "mesh_check",
+/// "mesh_fix". input_ext is the library file's extension
+/// ("3mf" / "stl" / "obj" / "glb" / "gltf" / "ply") — a
+/// 3MF input is converted to STL on the bridge before
+/// Blender sees it, because Blender has no 3MF importer.</summary>
+public sealed record BlenderJob
+{
+    [JsonPropertyName("blender_job_id")] public string BlenderJobId { get; init; } = "";
+    [JsonPropertyName("library_file_id")] public string LibraryFileId { get; init; } = "";
+    /// <summary>Authenticated dashboard route serving the
+    /// library file bytes for this Blender job.</summary>
+    [JsonPropertyName("input_url")] public string InputUrl { get; init; } = "";
+    [JsonPropertyName("input_sha256")] public string InputSha256 { get; init; } = "";
+    [JsonPropertyName("input_ext")] public string InputExt { get; init; } = "";
+    /// <summary>"mesh_check" or "mesh_fix".</summary>
+    [JsonPropertyName("action")] public string Action { get; init; } = "";
 }
 
 /// <summary>One queued lithophane print-file generation

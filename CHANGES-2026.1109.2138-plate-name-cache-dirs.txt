@@ -1,0 +1,52 @@
+C3D Print Bridge - version 2026.1109.2138-plate-name-cache-dirs
+What is new in this version (vs 2026.1109.2137-blender-serial-ams):
+
+- Bare ".gcode" plate names now get ".3mf" appended (Nov 10,
+  2026 - the Ronnie Buchanan router unblock, second half):
+  RepairPlateFileName only repaired ".gcode_.3mf" and
+  ".gcode-<digits>.3mf" forms, so a plate record that lost
+  its ".3mf" entirely ("plate1-19.gcode") passed through
+  unchanged. The bridge then uploaded a 3MF archive named
+  as plain G-code; the P2S treated it as plain G-code and
+  failed the print 6 seconds after accepting it with HMS
+  0500040000010003 ("The content of print file is
+  unreadable. Please resend the print job."). The repair
+  now appends ".3mf" to any name ending in bare ".gcode"
+  (case-insensitive). In the BambuAdapter context a
+  ".gcode" name is always such a plate - the dashboard
+  only serves sliced .gcode.3mf plates to Bambus, and
+  plain G-code is never a valid Bambu print file - so the
+  append is safe. Both UploadFileAsync and StartPrintAsync
+  call RepairPlateFileName, so the upload name and the
+  start command name stay the same repaired value, and
+  the FarmPoller plate gate now sees ".gcode.3mf" and
+  passes it as a Bambu plate. The existing ".gcode_.3mf"
+  and ".gcode-<digits>.3mf" repairs are unchanged and run
+  first.
+- FTPS uploads now create a missing /cache directory
+  (Nov 10, 2026): both printers' FTP roots had NO /cache
+  folder (only "timelapse"), so the bridge's upload to
+  /cache failed twice with curl exit 9 ("Server denied you
+  to change to the given directory"). FTP MKD "cache"
+  restored it on both printers (the server allows MKD;
+  verified Nov 10). The curl config in CurlFtps now
+  includes "ftp-create-dirs", so curl creates /cache
+  itself if it ever goes missing again instead of failing
+  the upload. When /cache already exists this is a
+  no-op. The "ftp-ssl" option is unchanged - its
+  deprecation warning is cosmetic and out of scope.
+- NOT in this build: the Bambu MQTT Push watchdog. The
+  Push subscription goes silent after the initial snapshot
+  at connect (one push per printer, then nothing, no
+  error, no recovery); a bridge restart restores one
+  fresh snapshot. Detecting the silence and
+  reconnecting/resubscribing needs a careful design and
+  is a separate morning task - it is not rushed into
+  this build.
+
+Files changed (3):
+- src/C3DBridge/Printers/BambuAdapter.cs - bare ".gcode"
+  branch in RepairPlateFileName; "ftp-create-dirs" in the
+  CurlFtps config.
+- src/C3DBridge/Program.cs - version bump only.
+- CHANGES-2026.1109.2138-plate-name-cache-dirs.txt - this document.

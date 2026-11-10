@@ -59,6 +59,7 @@ public sealed class Worker
     private readonly FarmPoller _farmPoller;
     private readonly IpReconciler _ipReconciler;
     private readonly SlicePoller _slicePoller;
+    private readonly BlenderPoller _blenderPoller;
     private readonly LithophanePoller _lithophanePoller;
     private readonly OcrPoller _ocrPoller;
     private readonly Dictionary<string, ActiveJob> _active = new(StringComparer.OrdinalIgnoreCase);
@@ -93,6 +94,7 @@ public sealed class Worker
         _farmPoller = new FarmPoller(dashboard, printers, cfg);
         _ipReconciler = new IpReconciler(dashboard, printers);
         _slicePoller = new SlicePoller(dashboard, cfg);
+        _blenderPoller = new BlenderPoller(dashboard, cfg);
         _lithophanePoller = new LithophanePoller(dashboard, cfg);
         _ocrPoller = new OcrPoller(dashboard);
     }
@@ -306,6 +308,14 @@ public sealed class Worker
                         // at a time, in the background; it never
                         // blocks status polls or heartbeats.
                         await _slicePoller.PollAsync(ct);
+                        // BLENDER MESH TOOL (2026.1109.0163):
+                        // mesh check / mesh fix jobs from the
+                        // library rows, run by Blender headless
+                        // on this PC. One job at a time, in the
+                        // background; it never blocks status
+                        // polls or heartbeats, and never starts
+                        // a print.
+                        await _blenderPoller.PollAsync(ct);
                         // LITHOPHANE (2026.1107): print-file
                         // generation for lithophane orders, on
                         // the same job-poll tick. One generation

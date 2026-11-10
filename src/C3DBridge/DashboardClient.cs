@@ -228,6 +228,16 @@ public sealed class DashboardClient : IDisposable
                     name = p.Name,
                     type = p.Type,
                     ip = p.Ip,
+                    // 2026.1109.0163-serial-ams-fix: the printer
+                    // serial. The dashboard already reads it in
+                    // the status handler and keys live rows
+                    // serial-first, but the projection never sent
+                    // it — so a live row with no serial keyed by
+                    // IP and never merged with the serial-keyed
+                    // manual record, and the card read UNKNOWN
+                    // forever. Every adapter populates Serial
+                    // (Bambu serial / Moonraker hostname).
+                    serial = p.Serial,
                     status = p.State,
                     state = p.State,
                     // AUTO-START BUILD: the printer's own raw
@@ -586,6 +596,78 @@ public sealed class DashboardClient : IDisposable
         };
         if (_machineId is not null) payload["machine_id"] = _machineId;
         var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/slice-report", payload, ct);
+        return ok;
+    }
+
+    /// <summary>BLENDER MESH TOOL (2026.1109.0163): poll GET
+    /// farm/blender-jobs for pending Blender mesh jobs.
+    /// Same Bearer key as every other dashboard request.
+    /// Returns null on any failure (caller logs the
+    /// reason). A 404 means the Blender endpoints are not
+    /// installed yet — logged once by the caller, like the
+    /// OCR endpoint rule.</summary>
+    public async Task<(List<BlenderJob>? Jobs, string? Problem)> PollBlenderJobsAsync(CancellationToken ct)
+    {
+        var (ok, status, body) = await SendAsync(HttpMethod.Get, "/wp-json/c3d-shipping/v1/farm/blender-jobs", null, ct);
+        if (!ok)
+        {
+            if (status == System.Net.HttpStatusCode.NotFound)
+                return (null, "Dashboard Blender endpoints are not installed yet.");
+            if (status == System.Net.HttpStatusCode.Unauthorized)
+                return (null, "Bridge API key was rejected by the dashboard.");
+            return (null, $"Blender job poll failed ({(int)status}): {Trim(body)}");
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var jobs = new List<BlenderJob>();
+            if (doc.RootElement.TryGetProperty("jobs", out var arr) && arr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in arr.EnumerateArray())
+                {
+                    var job = JsonSerializer.Deserialize<BlenderJob>(el.GetRawText(), JsonOptions);
+                    if (job is not null) jobs.Add(job);
+                }
+            }
+            return (jobs, null);
+        }
+        catch (Exception ex)
+        {
+            return (null, $"Dashboard returned a Blender job list the bridge could not read: {ex.Message}");
+        }
+    }
+
+    /// <summary>BLENDER MESH TOOL (2026.1109.0163): report a
+    /// Blender outcome to POST farm/blender-report. Status is
+    /// "done" (result carried — a check result, or
+    /// { before, after } plus fixed_base64 + fixed_file_name
+    /// for a fix) or "failed" (reason carried, no file).
+    /// The dashboard stores a done check result on the
+    /// library entry, and saves a done fix as a NEW library
+    /// entry; a failed Blender job never attaches anything.
+    /// Status "started" is the claim — the bridge reports it
+    /// the moment the first Blender run starts, the dashboard
+    /// marks the job 'running' with claimed_at, and the first
+    /// claim wins, so two bridges never run the same job.
+    /// Every report carries this bridge's machine_id when
+    /// configured; in legacy mode none is sent. The result is
+    /// a JsonElement parsed from the script's MESH_JSON line
+    /// (never built from literal keys here, so the contract
+    /// checker sees only the top-level wire fields).</summary>
+    public async Task<bool> ReportBlenderAsync(string blenderJobId, string status, string reason,
+        JsonElement? result, string? fixedBase64, string? fixedFileName, CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["blender_job_id"] = blenderJobId,
+            ["status"] = status,
+            ["reason"] = reason,
+            ["result"] = result,
+            ["fixed_base64"] = fixedBase64,
+            ["fixed_file_name"] = fixedFileName,
+        };
+        if (_machineId is not null) payload["machine_id"] = _machineId;
+        var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/blender-report", payload, ct);
         return ok;
     }
 

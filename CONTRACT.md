@@ -3,7 +3,7 @@
 **Canonical copy: this file** (`~/workspace/goals/shipping-dashboard-with-auto-rate-shopping/build/CONTRACT.md`).
 The bridge repo holds an exact copy (`~/workspace/bridge-machine-update/CONTRACT.md`); the dashboard copy rules, and the bridge copy must match it exactly at bridge build time. Machine-readable twin: `CONTRACT.json` beside this file. Check script: `tools/check-contract.py` (stdlib only).
 
-**Audited against:** dashboard `2026.1109.0159-bed-check-field` (staged tree) and bridge `2026.1109.2109-ams-safety-bed-watch` (Nov 9, 2026).
+**Audited against:** dashboard `2026.1109.0163-blender-mesh-tool` (staged tree) and bridge `2026.1109.2137-blender-serial-ams` (Nov 9, 2026).
 
 ## The rule (Marlena, Nov 9, 2026)
 
@@ -135,7 +135,7 @@ Bridge sends; dashboard reads. Both routes run the same handler. Response: `{ ok
 | ip | |
 | status | Printer state word; the dashboard reads `status` first, then `state`. Bridge sends both with the same value. |
 | state | Same as `status`. |
-| serial | Bambu factory serial, or the learned Moonraker hostname for Snapmaker. Empty = unknown, never guessed. **Dashboard-read, bridge-does-not-send on status** — the dashboard backfills it from the stored device config when absent. |
+| serial | Bambu factory serial, or the learned Moonraker hostname for Snapmaker. Empty = unknown, never guessed. Sent on every status push (2026.1109.0163 — before that the bridge never sent it, so a live row with no serial keyed by IP and never merged with the serial-keyed manual record); the dashboard keys live rows serial-first and the stored device config backfills it when absent. |
 | native_state | The printer's own raw state word, verbatim (Bambu `gcode_state`, Moonraker `print_stats.state`). Never mapped. |
 | progress_percent | Number or null. Dashboard also accepts the alias `progress`. |
 | remaining_seconds | Number or null |
@@ -422,3 +422,60 @@ These cross the wire or the LAN but are owned by someone else, and this contract
 4. Run `tools/check-contract.py` — it must PASS — before either build ships.
 5. Update the "Audited against" line at the top with the new dashboard and bridge versions.
 6. A rename is never one-sided: the contract, the dashboard, and the bridge change together, or not at all.
+
+## P. Blender mesh jobs — GET /wp-json/c3d-shipping/v1/farm/blender-jobs, POST /farm/blender-report
+
+Blender runs on a bridge machine (3d1PC), never on the web server. The dashboard queues a mesh job per library file from the "Check mesh" / "Fix mesh" buttons; the bridge runs Blender headless with the bundled scripts (`tools/blender/mesh_report.py`, `clean_for_print.py`) and reports the result back. Both actions are manual per file — nothing runs Blender automatically before slicing.
+
+### P.1 Poll (GET)
+
+Dashboard serves envelope `{ jobs }`; each job is the stored blender record plus `input_url` and `input_sha256`. The bridge reads the subset marked ✓.
+
+| Field | Bridge reads | Values / notes |
+|---|---|---|
+| blender_job_id | ✓ | Dashboard job id, `blender_…` |
+| library_file_id | ✓ | e.g. `lib_…` |
+| action | ✓ | `mesh_check` / `mesh_fix` |
+| input_url | ✓ | Dashboard route serving the library file bytes (`farm/blender-file?blender_job_id=…`) |
+| input_sha256 | ✓ | Lowercase hex; a mismatch discards the file |
+| input_ext | ✓ | File extension of the library file, lowercase without the dot: `3mf` / `stl` / `obj` / `glb` / `gltf` / `ply`. A `3mf` input is converted to STL on the bridge before Blender sees it (Blender has no 3MF importer; the conversion merges all parts into one mesh). |
+| status | — | `pending` / `running` / `done` / `failed`. Served; the bridge filters on `pending` only. |
+| machine_id | — | Served; bridge does not read |
+
+### P.2 Report (POST)
+
+Bridge sends; dashboard reads. Response: `{ ok: true }`.
+
+| Field | Values / notes |
+|---|---|
+| blender_job_id | |
+| status | `started` / `done` / `failed`. `started` is the claim (first claim wins). |
+| reason | Free text. On `failed`, Blender's own error text (trimmed). On `done`, a one-line summary. |
+| machine_id | Sent when the bridge has one; omitted in legacy mode. |
+| result | Object. Sent on `done` only. A check result (P.3) or a fix result (`before` + `after`, each a check result). |
+| fixed_base64 | Base64 STL of the fixed file, 64 MB cap. Sent on `done` for `mesh_fix` only. |
+| fixed_file_name | Fixed STL file name, e.g. `<name>-blender-fix.stl`. No underscore (§L). Sent on `done` for `mesh_fix` only. |
+
+### P.3 Check result object (`result` on a `mesh_check` done)
+
+The bridge sends the counts; the **dashboard computes the verdict** from them (the bridge never sends a verdict). Verdict rule: `pass` only when `manifold` is true AND `degenerate_faces` is 0 AND `loose_verts` is 0 AND `inverted_normals` is 0; anything else is `needs_work`.
+
+| Field | Values / notes |
+|---|---|
+| manifold | Boolean. True when `non_manifold_edges` is 0. |
+| degenerate_faces | Zero-area faces. |
+| non_manifold_edges | Edges not shared by exactly two faces. |
+| inverted_normals | Faces whose winding disagrees with the mesh's consistent winding (counted by comparing against a recalculated copy). |
+| normals_flipped | Boolean. True when the mesh's signed volume is negative (the whole mesh is inside-out). |
+| loose_verts | Vertices with no faces. |
+| verts | Number of vertices. |
+| faces | Number of faces. |
+| size_mm_x / size_mm_y / size_mm_z | Bounding-box size in millimetres. |
+| volume_cm3 | Absolute volume in cm³ (meaningful only for a closed mesh). |
+| min_wall_thickness_mm | Sampled minimum wall thickness in mm (raycast sampling, best effort). `null` when it could not be measured — never guessed. |
+
+A fix result is `{ before: <check result>, after: <check result> }`. The Fix run is Recipe A from the Blender guide: join parts, Merge by Distance, Delete Loose, Degenerate Dissolve, Recalculate Normals, origin to bottom centre, export STL. It keeps the original size (no rescale) and does not decimate. It merges multi-part files into one mesh — a file with separate parts (for example the Ryobi mount's text cutter) comes back as a single merged mesh. The original library file is never overwritten: the fixed file is saved as a NEW library entry.
+
+### P.4 Blender path (bridge-local config, out of scope for the wire)
+
+`blender_path` in `bridge-config.json` is bridge-local only and never crosses the wire. Default `D:\C3D-Tools\Blender\blender.exe` on 3d1PC. Empty or missing = the bridge fails a Blender job honestly ("Blender is not installed on this bridge") instead of guessing a path.

@@ -466,6 +466,14 @@ public sealed class BambuAdapter : IPrinterAdapter
     // (defensively also ".gcode_<digits>.3mf"). All three resolve to
     // the canonical Bambu plate name ".gcode.3mf"; anything else is
     // returned unchanged.
+    // Bare ".gcode" (Nov 10, 2026): a plate record can also lose
+    // its ".3mf" entirely ("plate1-19.gcode") - then the printer
+    // receives a 3MF archive named as plain G-code and fails the
+    // print with HMS 0500040000010003 ("The content of print file
+    // is unreadable"). In the BambuAdapter context a ".gcode" name
+    // is always such a plate (the dashboard only serves sliced
+    // .gcode.3mf plates to Bambus; plain G-code is never a valid
+    // Bambu print file), so appending ".3mf" here is safe.
     // No-underscore rule (Nov 7, 2026): Bambu/printer file names
     // must not contain "_". After the plate-extension repair above,
     // any remaining underscore is replaced with a hyphen, so the
@@ -487,6 +495,8 @@ public sealed class BambuAdapter : IPrinterAdapter
             if (dedup.Success)
                 repaired = repaired.Substring(0, dedup.Index) + ".gcode.3mf";
         }
+        if (repaired.EndsWith(".gcode", StringComparison.OrdinalIgnoreCase))
+            repaired += ".3mf";
         return SanitizePrinterFileName(repaired);
     }
 
@@ -1540,6 +1550,7 @@ internal static class CurlFtps
                 "user = \"" + Esc(user) + ":" + Esc(password) + "\"",
                 "insecure",
                 "ftp-ssl",
+                "ftp-create-dirs",
                 "upload-file = \"" + Esc(localPath) + "\"",
                 "url = \"ftps://" + host + ":990" + urlPath + "\"",
                 "silent",

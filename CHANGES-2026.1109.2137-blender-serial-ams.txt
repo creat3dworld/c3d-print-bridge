@@ -1,0 +1,101 @@
+C3D Print Bridge - version 2026.1109.2137-blender-serial-ams
+What is new in this version (vs 2026.1109.2136-printer-moved-names):
+
+- Printer serial on the status push (Nov 9, 2026 - the
+  Ronnie Buchanan router unblock): the printers projection
+  in PushStatusAsync now sends `serial = p.Serial`. The
+  dashboard already reads serial in its status handler
+  and keys live rows serial-first, but the bridge never
+  sent it - so a live row with no serial keyed by IP and
+  never merged with the serial-keyed manual record, and
+  the P2S card read UNKNOWN ("Bridge connected, but this
+  printer has not reported live status yet") with Start
+  disabled, even though the bridge pushed idle + AMS slots
+  every 30s. Every adapter already populates Serial
+  (Bambu factory serial / Moonraker hostname). One line
+  in DashboardClient.cs; the contract's printer_fields_sent
+  gains `serial` (dashboard names it; the dashboard
+  already reads it). The bridge safety reporter is
+  unchanged.
+- Blender mesh jobs (Nov 9, 2026): the bridge now polls
+  GET /wp-json/c3d-shipping/v1/farm/blender-jobs for pending
+  Blender jobs (dashboard 0163, "Check mesh" / "Fix mesh"
+  buttons on library file rows) and runs Blender headless
+  on the library file. mesh_check runs mesh_report.py --json
+  and reports the parsed MESH_JSON result; the dashboard
+  computes the pass/needs-work verdict from the counts.
+  mesh_fix runs mesh_report.py --json (before),
+  clean_for_print.py (Recipe A: join, Merge by Distance,
+  Delete Loose, Degenerate Dissolve, Recalculate Normals,
+  origin to bottom centre; no height/ratio, so the original
+  size is kept and nothing is decimated), then
+  mesh_report.py --json on the fixed STL (after), and
+  reports { before, after } plus the fixed STL (base64,
+  64 MB cap). The dashboard saves the fixed file as a NEW
+  library entry and never overwrites the original.
+- Blender path is configurable: blender_path in
+  bridge-config.json, default D:\C3D-Tools\Blender\
+  blender.exe on 3d1PC. Empty or missing = not configured,
+  and a Blender job fails honestly instead of running a
+  guessed binary. blender_timeout_minutes (default 15)
+  applies to each Blender run in a job.
+- A 3MF input is converted to STL first (the existing
+  tools\3mf-to-stl.py, Python + trimesh) because Blender
+  has no 3MF importer; the conversion merges all parts
+  into one mesh. STL / OBJ / GLB / GLTF / PLY go straight
+  to Blender. A failed conversion fails the job honestly -
+  a Blender run is never started from a bad file.
+- One Blender job at a time, in the background (status
+  polls and heartbeats keep flowing). A failed job is
+  kept in failed-blender\blender_<jobId>_FAILED_<YYYYMMDD-
+  HHMM> with Blender's own output tail in bridge.log, so
+  the next bare exit code is diagnosable. A Blender
+  failure is reported with Blender's own error text -
+  never an invented result. The 'started' claim goes out
+  the moment the first Blender run starts (first claim
+  wins, so two bridges never run the same job).
+- Bundled Blender scripts: tools\blender\ now ships the
+  four scripts (clean_for_print.py, mesh_report.py,
+  batch_convert.py, product_render.py) so they travel
+  with the bridge build. mesh_report.py gained --json
+  (one MESH_JSON line), per-face inverted-normal counts
+  (compared against a recalculated copy), a
+  normals_flipped flag (negative signed volume), and a
+  sampled minimum wall thickness (raycast, best effort,
+  null when unmeasurable). The human-readable REPORT:
+  output is unchanged.
+- NOT INSTALLED YET (Nov 9, 2026): the 3d1PC bridge is
+  not installed and Blender is still installing, so no
+  live Blender run is possible tonight. Live proof is
+  owed: after the install lands, press "Check mesh" on
+  the Ryobi mount v16 library entry (expect 2 degenerate
+  triangles, "Needs work"), then "Fix mesh" (expect a
+  new library entry with before 2 -> after 0 degenerate
+  triangles and the original file unchanged).
+- Version note: this build was first staged as
+  2026.1109.2322-blender-mesh-tool and never pushed;
+  it was renumbered to 2026.1109.2137-blender-serial-ams
+  when the serial fix was folded into the same build.
+
+Files changed (10):
+- src/C3DBridge/Models.cs - BlenderJob record; BlenderPath
+  + BlenderTimeoutMinutes on BridgeConfig.
+- src/C3DBridge/DashboardClient.cs - PollBlenderJobsAsync +
+  ReportBlenderAsync (POST farm/blender-report); serial
+  added to the PushStatusAsync printers projection.
+- src/C3DBridge/BlenderPoller.cs - new Blender poller
+  (poll, download + SHA check, 3MF conversion, Blender
+  runs in the background, MESH_JSON parsing, before/after
+  combine, failed-job retention).
+- src/C3DBridge/Worker.cs - BlenderPoller on the job-poll
+  tick, after SlicePoller.
+- src/C3DBridge/Program.cs - version bump only.
+- tools/blender/clean_for_print.py - new, shipped with the
+  bridge (copy of ~/workspace/3d-tools/blender-scripts/).
+- tools/blender/mesh_report.py - new, shipped with the
+  bridge (with --json, inverted normals, wall thickness).
+- tools/blender/batch_convert.py - new, shipped with the
+  bridge (copy of ~/workspace/3d-tools/blender-scripts/).
+- tools/blender/product_render.py - new, shipped with the
+  bridge (copy of ~/workspace/3d-tools/blender-scripts/).
+- CHANGES-2026.1109.2137-blender-serial-ams.txt - this document.
