@@ -66,6 +66,15 @@ public sealed class BambuAdapter : IPrinterAdapter
 {
     private readonly PrinterConfig _cfg;
     private readonly int _mqttPort;
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139):
+    /// when the last Bambu MQTT push report arrived
+    /// (DateTime.MinValue = none yet). Set on every
+    /// successful pushall answer in FetchReportAsync.
+    /// The self-test's mqtt_push check and the Worker's
+    /// mqtt_push_silent watch both read this — a push
+    /// that never arrives for 10 minutes is silence,
+    /// not "unknown".</summary>
+    public DateTime LastPushUtc { get; private set; } = DateTime.MinValue;
     // 2026.1105-push-log: last push summary written to the log, so each
     // printer answer is recorded once per change (and once on the first
     // push) instead of once per status poll.
@@ -311,8 +320,46 @@ public sealed class BambuAdapter : IPrinterAdapter
 
     /// <summary>Connect, ask for a full report, wait briefly, disconnect.
     /// Short-lived connections keep the bridge light; a missed report
-    /// is "unreachable", never a stale or invented state.</summary>
-    private async Task<string?> FetchReportAsync(CancellationToken ct)
+    /// is "unreachable", never a stale or invented state. The routine
+    /// status poll uses the 6-second wait; the MQTT push watchdog's
+    /// recovery fetch uses a 20-second wait (see
+    /// AttemptPushRecoveryAsync).</summary>
+    private Task<string?> FetchReportAsync(CancellationToken ct)
+        => FetchReportWithWaitAsync(TimeSpan.FromSeconds(6), ct);
+
+    /// <summary>MQTT-PUSH WATCHDOG (2026.1109.2140): a recovery
+    /// fetch — the same connect / subscribe / pushall cycle as
+    /// the routine status poll, but with a 20-second wait
+    /// instead of 6. Called ONLY by MqttPushWatchdog when a
+    /// printer's push feed has gone silent: a printer waking
+    /// from standby, or a broker busy with the second bridge's
+    /// session, may answer slowly, and the routine 6-second
+    /// wait gives up too early. Returns true when a push
+    /// arrived (LastPushUtc is updated by the shared fetch,
+    /// so the next routine poll sees a fresh feed). Never
+    /// throws; a failed attempt returns false and the
+    /// watchdog backs off before trying again. No new
+    /// contract field: recovery is visible on the dashboard
+    /// through the resumed status push, and in the bridge
+    /// log (every attempt + outcome).</summary>
+    public async Task<bool> AttemptPushRecoveryAsync(CancellationToken ct)
+    {
+        if (!HasMqttIdentity) return false;
+        var report = await FetchReportWithWaitAsync(TimeSpan.FromSeconds(20), ct);
+        return report is not null;
+    }
+
+    /// <summary>Whether this printer has the identity (serial
+    /// + access code) an MQTT session needs. CheckIdentity
+    /// logs nothing — it only returns the verdict — so this
+    /// is cheap to ask every tick. A printer without it can
+    /// never push, so the watchdog never spends a recovery
+    /// attempt on it: the dashboard already says so ("no
+    /// serial number in config"), and an attempt would only
+    /// waste the 20-second wait.</summary>
+    public bool HasMqttIdentity => CheckIdentity().Ok;
+
+    private async Task<string?> FetchReportWithWaitAsync(TimeSpan wait, CancellationToken ct)
     {
         var factory = new MqttFactory();
         using var client = factory.CreateMqttClient();
@@ -350,9 +397,14 @@ public sealed class BambuAdapter : IPrinterAdapter
                 .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
                 .Build(), ct);
 
-            var completed = await Task.WhenAny(received.Task, Task.Delay(TimeSpan.FromSeconds(6), ct));
+            var completed = await Task.WhenAny(received.Task, Task.Delay(wait, ct));
             if (completed != received.Task) return null;
-            return await received.Task;
+            var report = await received.Task;
+            // BRIDGE-CONFIG HEALTH (2026.1109.2139): a push
+            // arrived — record when, for the mqtt_push
+            // self-test check and the silence watch.
+            LastPushUtc = DateTime.UtcNow;
+            return report;
         }
         catch
         {
@@ -362,6 +414,27 @@ public sealed class BambuAdapter : IPrinterAdapter
         {
             try { await client.DisconnectAsync(); } catch { /* best effort */ }
         }
+    }
+
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139):
+    /// does the printer's FTP root list a `cache`
+    /// directory? FTP LIST the root and look for it —
+    /// this check NEVER creates it (that is the
+    /// uploader's job via curl --ftp-create-dirs). A
+    /// missing /cache fails: uploads to /cache fail
+    /// with curl exit 9 until it is restored. Returns
+    /// (exists, detail).</summary>
+    public async Task<(bool Exists, string Detail)> FtpCacheExistsAsync(CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_cfg.AccessCode))
+            return (false, $"Printer '{Name}': no LAN access code in config — FTP /cache cannot be checked.");
+        var (ok, entries, reason) = await CurlFtps.ListAsync(_cfg.Ip, "bblp", _cfg.AccessCode, ct);
+        if (!ok)
+            return (false, $"Printer '{Name}': FTP root listing failed ({reason}).");
+        var found = entries.Any(e => string.Equals(e.Trim(), "cache", StringComparison.OrdinalIgnoreCase));
+        return found
+            ? (true, $"Printer '{Name}': FTP /cache exists.")
+            : (false, $"Printer '{Name}': FTP root lists {entries.Count} entr(ies) but no 'cache' directory — uploads to /cache will fail until it is restored.");
     }
 
     /// <summary>AUTO-START BUILD — identify a Bambu MQTT
@@ -1585,6 +1658,77 @@ internal static class CurlFtps
         catch (Exception ex)
         {
             return (false, $"curl FTPS upload failed: {Redact(ex.Message, password)}", false);
+        }
+        finally
+        {
+            try { File.Delete(configPath); } catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139):
+    /// list the printer's FTP root (FTPS, implicit TLS
+    /// on 990) via curl, same credential handling as
+    /// UploadAsync (temp config file, never on the
+    /// command line, redacted in reasons, deleted
+    /// afterwards). Returns (ok, entry names, reason).
+    /// A LIST line is either a bare name or a long
+    /// listing whose name is the last token — either
+    /// way the name is what is returned.</summary>
+    public static async Task<(bool Ok, List<string> Entries, string Reason)> ListAsync(
+        string host, string user, string password, CancellationToken ct)
+    {
+        var curlExe = FindCurlExe();
+        if (curlExe is null) return (false, new List<string>(), "curl.exe not found");
+        var configPath = Path.Combine(Path.GetTempPath(), "c3d-curl-" + Guid.NewGuid().ToString("N") + ".txt");
+        try
+        {
+            string Esc(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            var config = string.Join("\n",
+                "user = \"" + Esc(user) + ":" + Esc(password) + "\"",
+                "insecure",
+                "ftp-ssl",
+                "url = \"ftps://" + host + ":990/\"",
+                "silent",
+                "show-error");
+            await File.WriteAllTextAsync(configPath, config, ct);
+            var psi = new ProcessStartInfo
+            {
+                FileName = curlExe,
+                Arguments = "-K \"" + configPath + "\"",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using var proc = new Process { StartInfo = psi };
+            proc.Start();
+            using var reg = ct.Register(() => { try { proc.Kill(entireProcessTree: true); } catch { /* best effort */ } });
+            var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
+            var stderr = await proc.StandardError.ReadToEndAsync(ct);
+            await proc.WaitForExitAsync(ct);
+            if (proc.ExitCode != 0)
+            {
+                var err = Redact(stderr.Trim(), password);
+                if (err.Length > 300) err = err[..300];
+                return (false, new List<string>(), $"curl FTP listing failed (exit {proc.ExitCode}): {err}");
+            }
+            var entries = new List<string>();
+            foreach (var raw in stdout.Split('\n'))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0) continue;
+                // Long listing: "drwxr-xr-x 2 ... cache" —
+                // the name is the last whitespace token.
+                // A bare name (NLST-style) is the whole line.
+                var parts = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                var name = parts.Length == 0 ? "" : parts[^1];
+                if (name.Length > 0) entries.Add(name);
+            }
+            return (true, entries, "");
+        }
+        catch (Exception ex)
+        {
+            return (false, new List<string>(), $"curl FTP listing failed: {Redact(ex.Message, password)}");
         }
         finally
         {

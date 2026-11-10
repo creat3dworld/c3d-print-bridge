@@ -68,7 +68,84 @@ public static class MachineInfo
             os = hw.Os,
             slicers = SlicersPresent(cfg),
             slice_status = status,
+            // BRIDGE-CONFIG HEALTH (2026.1109.2139,
+            // CONTRACT.md §Q.2): one entry per known slicer
+            // with its configured path, whether the exe is
+            // actually there, its file version, and ok /
+            // not_configured / missing. The dashboard stores
+            // it per machine and flags missing /
+            // not_configured on the Slicer tab.
+            slicer_config = SlicerConfigEntries(cfg),
         };
+    }
+
+    /// <summary>The three known slicer words, in the order
+    /// the dashboard lists them.</summary>
+    public static readonly string[] KnownSlicers = { "bambu-studio", "snapmaker-orca", "orcaslicer" };
+
+    /// <summary>Exe file name for a slicer word — the name
+    /// the slicer's own installer puts on disk.</summary>
+    public static string ExeNameFor(string slicer) => slicer switch
+    {
+        "bambu-studio" => "bambu-studio.exe",
+        "snapmaker-orca" => "snapmaker-orca.exe",
+        "orcaslicer" => "orcaslicer.exe",
+        _ => "",
+    };
+
+    /// <summary>Configured exe path for a slicer word, or
+    /// null/blank when unconfigured.</summary>
+    public static string? ConfiguredPathFor(BridgeConfig cfg, string slicer) => slicer switch
+    {
+        "bambu-studio" => cfg.SlicerBambuStudioPath,
+        "snapmaker-orca" => cfg.SlicerSnapmakerOrcaPath,
+        "orcaslicer" => cfg.SlicerOrcaslicerPath,
+        _ => null,
+    };
+
+    /// <summary>Return a config with one slicer's exe path
+    /// replaced. The caller loads first and saves after —
+    /// every other field is kept.</summary>
+    public static BridgeConfig WithSlicerPath(BridgeConfig cfg, string slicer, string path) => slicer switch
+    {
+        "bambu-studio" => cfg with { SlicerBambuStudioPath = path },
+        "snapmaker-orca" => cfg with { SlicerSnapmakerOrcaPath = path },
+        "orcaslicer" => cfg with { SlicerOrcaslicerPath = path },
+        _ => cfg,
+    };
+
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139): the
+    /// slicer_config array for the slice_machine block —
+    /// one entry per known slicer: { slicer, path, exists,
+    /// version, status }. status is ok (path set + exe
+    /// exists) / not_configured (no path) / missing (path
+    /// set, exe not found). version is the exe file
+    /// version, or '' when it cannot be read. Checked live
+    /// on every heartbeat, like SlicersPresent.</summary>
+    public static List<object> SlicerConfigEntries(BridgeConfig cfg)
+    {
+        var entries = new List<object>();
+        foreach (var slicer in KnownSlicers)
+        {
+            var path = (ConfiguredPathFor(cfg, slicer) ?? "").Trim();
+            var exists = path.Length > 0 && SlicerExists(path);
+            var version = "";
+            if (exists)
+            {
+                try { version = System.Diagnostics.FileVersionInfo.GetVersionInfo(path).FileVersion ?? ""; }
+                catch { version = ""; }
+            }
+            var status = path.Length == 0 ? "not_configured" : exists ? "ok" : "missing";
+            entries.Add(new
+            {
+                slicer,
+                path,
+                exists,
+                version,
+                status,
+            });
+        }
+        return entries;
     }
 
     /// <summary>Which of the three known slicers are actually

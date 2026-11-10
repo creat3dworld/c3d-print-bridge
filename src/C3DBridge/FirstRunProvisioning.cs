@@ -66,6 +66,14 @@ public static class FirstRunProvisioning
         [JsonPropertyName("machine_id")] public string? MachineId { get; init; }
         [JsonPropertyName("machine_name")] public string? MachineName { get; init; }
         [JsonPropertyName("bridge_key")] public string? BridgeKey { get; init; }
+        /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139,
+        /// CONTRACT.md §Q.5): the dashboard's slicer
+        /// default install locations, keyed by slicer word
+        /// to a default install directory. Optional; absent
+        /// means the C:\Program Files fallback. Read here
+        /// and persisted into bridge-config.json so
+        /// SlicerSetup can discover slicers there.</summary>
+        [JsonPropertyName("slicer_default_locations")] public Dictionary<string, string>? SlicerDefaultLocations { get; init; }
     }
 
     private static readonly object LogLock = new();
@@ -164,7 +172,7 @@ public static class FirstRunProvisioning
 
         try
         {
-            ApplyIdentityToConfig(dashboardUrl, machineId, machineName);
+            ApplyIdentityToConfig(dashboardUrl, machineId, machineName, setup.SlicerDefaultLocations);
         }
         catch (Exception ex)
         {
@@ -296,10 +304,13 @@ public static class FirstRunProvisioning
     /// <summary>Write the dashboard URL + machine identity into
     /// bridge-config.json, preserving everything else (printers,
     /// slicer paths, intervals). Creates a minimal config when
-    /// none exists yet. Throws when an existing config file
-    /// cannot be read — a broken config is never silently
-    /// overwritten with a fresh one that would lose printers.</summary>
-    private static void ApplyIdentityToConfig(string dashboardUrl, string machineId, string machineName)
+    /// none exists yet. The packaged slicer default locations,
+    /// when present, are merged in (non-blank values only) so
+    /// SlicerSetup discovers slicers there. Throws when an existing
+    /// config file cannot be read — a broken config is never
+    /// silently overwritten with a fresh one that would lose printers.</summary>
+    private static void ApplyIdentityToConfig(string dashboardUrl, string machineId, string machineName,
+        IReadOnlyDictionary<string, string>? slicerDefaultLocations = null)
     {
         BridgeConfig cfg;
         if (!File.Exists(Config.ConfigPath))
@@ -324,6 +335,16 @@ public static class FirstRunProvisioning
                 MachineId = machineId,
                 MachineName = machineName,
             };
+        }
+        if (slicerDefaultLocations is not null)
+        {
+            var defaults = new Dictionary<string, string>(cfg.SlicerDefaultLocations, StringComparer.OrdinalIgnoreCase);
+            foreach (var (slicer, location) in slicerDefaultLocations)
+            {
+                if (!string.IsNullOrWhiteSpace(location))
+                    defaults[slicer] = location.Trim();
+            }
+            cfg = cfg with { SlicerDefaultLocations = defaults };
         }
         Config.Save(cfg);
     }

@@ -74,6 +74,7 @@ public sealed class SlicePoller
 
     private readonly DashboardClient _dashboard;
     private readonly BridgeConfig _config;
+    private readonly ErrorReporter _errors;
     private RunningSlice? _running;
 
     private sealed record RunningSlice(
@@ -85,10 +86,24 @@ public sealed class SlicePoller
         Task<string> StdOutTask,
         Task<string> StdErrTask);
 
-    public SlicePoller(DashboardClient dashboard, BridgeConfig config)
+    public SlicePoller(DashboardClient dashboard, BridgeConfig config, ErrorReporter errors)
     {
         _dashboard = dashboard;
         _config = config;
+        _errors = errors;
+    }
+
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139):
+    /// every slice failure reports 'failed' to the slice
+    /// route AND an error report (slice_failed, source
+    /// slice, with the slice_job_id) — one funnel, so no
+    /// failure path can report to one channel and forget
+    /// the other.</summary>
+    private async Task ReportSliceFailedAsync(SliceJob job, string reason, CancellationToken ct)
+    {
+        await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", reason, null, null, null, ct);
+        await _errors.ReportAsync("slice_failed", "error", "slice",
+            $"Slice job {job.SliceJobId} failed.", reason, "", job.SliceJobId, ct);
     }
 
     /// <summary>MULTI-BRIDGE (2026.1108): true while a slice
@@ -135,19 +150,37 @@ public sealed class SlicePoller
         if (slicer != "orcaslicer" && slicer != "snapmaker-orca" && slicer != "bambu-studio")
         {
             Program.Log($"[slice] Job {job.SliceJobId}: unknown slicer '{job.Slicer}'. Failing honestly, nothing sliced.");
-            await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Unknown slicer '{job.Slicer}'.", null, null, null, ct);
+            await ReportSliceFailedAsync(job, $"Unknown slicer '{job.Slicer}'.", ct);
             return;
         }
-        if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
+        if (string.IsNullOrWhiteSpace(exe))
         {
-            Program.Log($"[slice] Job {job.SliceJobId}: slicer '{slicer}' is not configured (no executable path in bridge-config) or the path does not exist. Failing honestly, nothing sliced.");
+            // BRIDGE-CONFIG HEALTH (2026.1109.2139): a slice
+            // attempted with no exe path at all is
+            // slicer_not_configured (not slice_failed alone)
+            // — the Nov 2–6 failure mode that sat unnoticed
+            // for 8 days.
+            Program.Log($"[slice] Job {job.SliceJobId}: slicer '{slicer}' is not configured (no executable path in bridge-config). Failing honestly, nothing sliced.");
             await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Slicer '{slicer}' is not configured on this bridge (no executable path). Run the slice pilot to discover and configure it.", null, null, null, ct);
+            await _errors.ReportAsync("slicer_not_configured", "error", "slice",
+                $"Slice job {job.SliceJobId}: slicer '{slicer}' is not configured.",
+                "No executable path is configured for this slicer in bridge-config.json.", "", job.SliceJobId, ct);
+            return;
+        }
+        if (!File.Exists(exe))
+        {
+            // A path is set but the exe is gone: slicer_missing.
+            Program.Log($"[slice] Job {job.SliceJobId}: slicer '{slicer}' is configured at '{exe}' but the executable was not found. Failing honestly, nothing sliced.");
+            await ReportSliceFailedAsync(job, $"Slicer '{slicer}' is configured at '{exe}' but the executable was not found.", ct);
+            await _errors.ReportAsync("slicer_missing", "error", "slicer_config",
+                $"Slicer '{slicer}' is missing on this bridge.",
+                $"The configured executable path '{exe}' does not exist.", "", job.SliceJobId, ct);
             return;
         }
         if (string.IsNullOrWhiteSpace(_config.SlicerPresetsDir) || !Directory.Exists(_config.SlicerPresetsDir))
         {
             Program.Log($"[slice] Job {job.SliceJobId}: slicer presets folder is not configured or does not exist. Failing honestly.");
-            await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", "Slicer presets folder is not configured on this bridge.", null, null, null, ct);
+            await ReportSliceFailedAsync(job, "Slicer presets folder is not configured on this bridge.", ct);
             return;
         }
         // Preset names must be bare file names under the
@@ -168,14 +201,14 @@ public sealed class SlicePoller
             return path;
         }
         var printerJson = ResolvePreset(job.PresetPrinter, "printer");
-        if (printerJson is null) { await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Printer preset '{job.PresetPrinter}' was not found in the slicer presets folder.", null, null, null, ct); return; }
+        if (printerJson is null) { await ReportSliceFailedAsync(job, $"Printer preset '{job.PresetPrinter}' was not found in the slicer presets folder.", ct); return; }
         var processJson = ResolvePreset(job.PresetProcess, "process");
-        if (processJson is null) { await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Process preset '{job.PresetProcess}' was not found in the slicer presets folder.", null, null, null, ct); return; }
+        if (processJson is null) { await ReportSliceFailedAsync(job, $"Process preset '{job.PresetProcess}' was not found in the slicer presets folder.", ct); return; }
         var filamentJson = ResolvePreset(job.PresetFilament, "filament");
-        if (filamentJson is null) { await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Filament preset '{job.PresetFilament}' was not found in the slicer presets folder.", null, null, null, ct); return; }
+        if (filamentJson is null) { await ReportSliceFailedAsync(job, $"Filament preset '{job.PresetFilament}' was not found in the slicer presets folder.", ct); return; }
         if (job.Plate < 0)
         {
-            await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", "Slice plate number is invalid.", null, null, null, ct);
+            await ReportSliceFailedAsync(job, "Slice plate number is invalid.", ct);
             return;
         }
 
@@ -184,7 +217,7 @@ public sealed class SlicePoller
         try { Directory.CreateDirectory(outDir); }
         catch (Exception ex)
         {
-            await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Could not create the slice work folder: {ex.Message}", null, null, null, ct);
+            await ReportSliceFailedAsync(job, $"Could not create the slice work folder: {ex.Message}", ct);
             return;
         }
         var inputPath = Path.Combine(workDir, "input.3mf");
@@ -192,7 +225,7 @@ public sealed class SlicePoller
         if (!dlOk)
         {
             Program.Log($"[slice] Job {job.SliceJobId}: library file download failed ({dlReason}).");
-            await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Library file download failed: {dlReason}", null, null, null, ct);
+            await ReportSliceFailedAsync(job, $"Library file download failed: {dlReason}", ct);
             RetainFailedSliceDir(workDir, job.SliceJobId);
             return;
         }
@@ -205,14 +238,14 @@ public sealed class SlicePoller
             if (await fs.ReadAsync(magic, ct) < 2 || magic[0] != (byte)'P' || magic[1] != (byte)'K')
             {
                 Program.Log($"[slice] Job {job.SliceJobId}: library file is not a 3MF (no PK magic). Refused.");
-                await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", "Library file is not a 3MF file.", null, null, null, ct);
+                await ReportSliceFailedAsync(job, "Library file is not a 3MF file.", ct);
                 RetainFailedSliceDir(workDir, job.SliceJobId);
                 return;
             }
         }
         catch (Exception ex)
         {
-            await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Could not read the library file: {ex.Message}", null, null, null, ct);
+            await ReportSliceFailedAsync(job, $"Could not read the library file: {ex.Message}", ct);
             RetainFailedSliceDir(workDir, job.SliceJobId);
             return;
         }
@@ -233,7 +266,7 @@ public sealed class SlicePoller
             if (!convOk)
             {
                 Program.Log($"[slice] Job {job.SliceJobId}: 3MF-to-STL conversion failed ({convReason}).");
-                await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Could not convert the 3MF model to STL for Snapmaker Orca: {convReason}", null, null, null, ct);
+                await ReportSliceFailedAsync(job, $"Could not convert the 3MF model to STL for Snapmaker Orca: {convReason}", ct);
                 RetainFailedSliceDir(workDir, job.SliceJobId);
                 return;
             }
@@ -284,7 +317,7 @@ public sealed class SlicePoller
         catch (Exception ex)
         {
             Program.Log($"[slice] Job {job.SliceJobId}: could not start the slicer ({ex.Message}).");
-            await _dashboard.ReportSliceAsync(job.SliceJobId, "failed", $"Could not start the slicer: {ex.Message}", null, null, null, ct);
+            await ReportSliceFailedAsync(job, $"Could not start the slicer: {ex.Message}", ct);
             RetainFailedSliceDir(workDir, job.SliceJobId);
             return;
         }
@@ -326,7 +359,7 @@ public sealed class SlicePoller
             var timeoutKept = RetainFailedSliceDir(run.WorkDir, run.Job.SliceJobId);
             var timeoutHint = EvidenceSuffix(timeoutKept);
             Program.Log($"[slice] Job {run.Job.SliceJobId}: slicing timed out after {timeout.TotalMinutes} minutes. Killed and failed.{timeoutHint}");
-            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Slicing timed out after {timeout.TotalMinutes} minutes.{timeoutHint}", null, null, null, ct);
+            await ReportSliceFailedAsync(run.Job, $"Slicing timed out after {timeout.TotalMinutes} minutes.{timeoutHint}", ct);
             return;
         }
         if (!run.Process.HasExited)
@@ -355,7 +388,7 @@ public sealed class SlicePoller
                 ? $"Failed slice kept in failed-slices\\{kept} on the shop PC; the slicer's output is in bridge.log."
                 : "The failed slice folder could not be retained on the shop PC.";
             Program.Log($"[slice] Job {run.Job.SliceJobId}: slicer exited with code {exitCode}. Failed; {logHint}");
-            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Slicer exited with code {exitCode}. {logHint}", null, null, null, ct);
+            await ReportSliceFailedAsync(run.Job, $"Slicer exited with code {exitCode}. {logHint}", ct);
             return;
         }
         // Find plate_N.gcode in the output dir; if the
@@ -389,7 +422,7 @@ public sealed class SlicePoller
         {
             var noGcodeKept = RetainFailedSliceDir(run.WorkDir, run.Job.SliceJobId);
             Program.Log($"[slice] Job {run.Job.SliceJobId}: slicer exited 0 but no plate_{plate}.gcode was produced. Failed; nothing attached.{EvidenceSuffix(noGcodeKept)}");
-            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Slicer finished but produced no plate_{plate}.gcode.{EvidenceSuffix(noGcodeKept)}", null, null, null, ct);
+            await ReportSliceFailedAsync(run.Job, $"Slicer finished but produced no plate_{plate}.gcode.{EvidenceSuffix(noGcodeKept)}", ct);
             return;
         }
         var verify = VerifyGcode(gcodePath);
@@ -397,7 +430,7 @@ public sealed class SlicePoller
         {
             var verifyKept = RetainFailedSliceDir(run.WorkDir, run.Job.SliceJobId);
             Program.Log($"[slice] Job {run.Job.SliceJobId}: G-code verification failed ({verify}). Nothing attached.{EvidenceSuffix(verifyKept)}");
-            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Sliced G-code failed verification: {verify}{EvidenceSuffix(verifyKept)}", null, null, null, ct);
+            await ReportSliceFailedAsync(run.Job, $"Sliced G-code failed verification: {verify}{EvidenceSuffix(verifyKept)}", ct);
             return;
         }
         var bytes = await File.ReadAllBytesAsync(gcodePath, ct);
@@ -405,7 +438,7 @@ public sealed class SlicePoller
         {
             var tooBigKept = RetainFailedSliceDir(run.WorkDir, run.Job.SliceJobId);
             Program.Log($"[slice] Job {run.Job.SliceJobId}: sliced G-code is {bytes.Length} bytes, over the {MaxReportBytes} report cap. Failed; nothing attached.{EvidenceSuffix(tooBigKept)}");
-            await _dashboard.ReportSliceAsync(run.Job.SliceJobId, "failed", $"Sliced G-code is too large to report to the dashboard.{EvidenceSuffix(tooBigKept)}", null, null, null, ct);
+            await ReportSliceFailedAsync(run.Job, $"Sliced G-code is too large to report to the dashboard.{EvidenceSuffix(tooBigKept)}", ct);
             return;
         }
         // Slice-output name rule (Nov 7, 2026): a slice output

@@ -53,15 +53,29 @@ public sealed class Worker
     /// 2273 changes file, not hidden.</summary>
     public static bool AnyPrinting { get; private set; }
 
-    private readonly BridgeConfig _cfg;
+    private BridgeConfig _cfg;
     private readonly PrinterRegistry _printers;
     private readonly DashboardClient _dashboard;
     private readonly FarmPoller _farmPoller;
     private readonly IpReconciler _ipReconciler;
-    private readonly SlicePoller _slicePoller;
+    private SlicePoller _slicePoller;
     private readonly BlenderPoller _blenderPoller;
     private readonly LithophanePoller _lithophanePoller;
     private readonly OcrPoller _ocrPoller;
+    // BRIDGE-CONFIG HEALTH (2026.1109.2139): error
+    // reporting, machine-config sync, and self-test.
+    private readonly ErrorReporter _errorReporter;
+    private readonly MachineConfigSync _machineConfigSync;
+    private readonly SelfTestRunner _selfTest;
+    private readonly DateTime _startedUtc = DateTime.UtcNow;
+    private bool _firstHeartbeatDone;
+    private bool _heartbeatFailed;
+    // MQTT-PUSH WATCHDOG (2026.1109.2140): detects a silent
+    // Bambu push feed and actively recovers it (longer-wait
+    // pushall, with backoff). Owns the mqtt_push_silent
+    // episode state — the 2139 silence watch lives in it
+    // now, not here.
+    private readonly MqttPushWatchdog _mqttWatchdog;
     private readonly Dictionary<string, ActiveJob> _active = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _terminalReported = new(StringComparer.OrdinalIgnoreCase);
     private List<DashboardJob> _lastPollJobs = new();
@@ -91,9 +105,13 @@ public sealed class Worker
         // the farm path). IpReconciler and SlicePoller are
         // the IP-change detection and in-dashboard slicing
         // stages from the same build.
-        _farmPoller = new FarmPoller(dashboard, printers, cfg);
+        _errorReporter = new ErrorReporter(dashboard);
+        _mqttWatchdog = new MqttPushWatchdog(_errorReporter);
+        _farmPoller = new FarmPoller(dashboard, printers, cfg, _errorReporter);
         _ipReconciler = new IpReconciler(dashboard, printers);
-        _slicePoller = new SlicePoller(dashboard, cfg);
+        _slicePoller = new SlicePoller(dashboard, cfg, _errorReporter);
+        _machineConfigSync = new MachineConfigSync(dashboard);
+        _selfTest = new SelfTestRunner(dashboard, _errorReporter);
         _blenderPoller = new BlenderPoller(dashboard, cfg);
         _lithophanePoller = new LithophanePoller(dashboard, cfg);
         _ocrPoller = new OcrPoller(dashboard);
@@ -105,6 +123,62 @@ public sealed class Worker
     /// "idle" — so the dashboard knows this machine is free
     /// to take the next slice job.</summary>
     private string SliceStatus() => _slicePoller.IsSlicing ? "busy" : "idle";
+
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139):
+    /// fetch + apply the dashboard-held machine config,
+    /// auto-configure slicers from it, then self-test.
+    /// Runs on startup (after the first successful
+    /// heartbeat) and when the machine config version
+    /// changes. Each step logs and never throws — a
+    /// failed fetch leaves the local config in place.</summary>
+    private async Task ApplyConfigChangeAsync(CancellationToken ct)
+    {
+        var updated = await _machineConfigSync.FetchAndApplyAsync(ct);
+        if (updated is not null) ApplyUpdatedConfig(updated);
+        var afterSetup = await SlicerSetup.EnsureSlicersConfiguredAsync(_errorReporter, ct);
+        if (afterSetup is not null) ApplyUpdatedConfig(afterSetup);
+        await _selfTest.RunAsync(_cfg, _printers.All, _startedUtc, ct);
+    }
+
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139):
+    /// swap in a config that MachineConfigSync or
+    /// SlicerSetup changed on disk: the dashboard client
+    /// (heartbeat slice_machine block), a fresh SlicePoller
+    /// (slicer paths are read at slice start), and — when
+    /// the local printer list was empty and the fetched
+    /// config supplied printers — the registry. A slice
+    /// already running keeps its poller (and its paths)
+    /// until it finishes; the new paths apply to the next
+    /// slice.</summary>
+    private void ApplyUpdatedConfig(BridgeConfig cfg)
+    {
+        _cfg = cfg;
+        _dashboard.UpdateConfig(cfg);
+        if (!_slicePoller.IsSlicing)
+            _slicePoller = new SlicePoller(_dashboard, cfg, _errorReporter);
+        else
+            Program.Log("Slicer paths updated on disk while a slice is running; the running slice keeps its configuration and the new paths apply to the next slice.");
+        if (_printers.All.Count == 0 && cfg.Printers.Count > 0)
+        {
+            _printers.Reload(cfg.Printers);
+            Program.Log($"Machine config supplied {cfg.Printers.Count} printer(s); the registry was rebuilt from the fetched config.");
+        }
+    }
+
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139):
+    /// when a heartbeat/status response carried a
+    /// machine_config_version higher than the version
+    /// last applied, fetch and apply the new config
+    /// (plus slicer auto-configure + self-test). A
+    /// no-op when nothing new was seen.</summary>
+    private async Task CheckMachineConfigVersionAsync(CancellationToken ct)
+    {
+        if (!_dashboard.HasMachineId) return;
+        var seen = _dashboard.MachineConfigVersionSeen;
+        if (seen <= 0 || seen <= _machineConfigSync.LastAppliedVersion) return;
+        Program.Log($"[machine-config] Dashboard reports machine_config_version {seen} (last applied {_machineConfigSync.LastAppliedVersion}); fetching the new config.");
+        await ApplyConfigChangeAsync(ct);
+    }
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -239,7 +313,13 @@ public sealed class Worker
                         }
                     }
                     if (_dashboard.HasKey)
+                    {
                         await _dashboard.PushStatusAsync(statuses.Values.ToList(), queueLength, ct, SliceStatus());
+                        // BRIDGE-CONFIG HEALTH (2026.1109.2139):
+                        // status responses carry
+                        // machine_config_version too.
+                        await CheckMachineConfigVersionAsync(ct);
+                    }
                     else
                         foreach (var st in statuses.Values)
                             Program.Log($"[local] {st.Name}: {st.State} {st.Detail}");
@@ -263,7 +343,32 @@ public sealed class Worker
                 if (_dashboard.HasKey && now - lastHeartbeat >= TimeSpan.FromSeconds(_cfg.HeartbeatIntervalSeconds))
                 {
                     lastHeartbeat = now;
-                    await _dashboard.HeartbeatAsync(ct, SliceStatus());
+                    var heartbeatOk = await _dashboard.HeartbeatAsync(ct, SliceStatus());
+                    if (heartbeatOk)
+                    {
+                        // BRIDGE-CONFIG HEALTH (2026.1109.2139):
+                        // a heartbeat re-established after a
+                        // failure triggers a fresh self-test.
+                        if (_heartbeatFailed)
+                        {
+                            _heartbeatFailed = false;
+                            Program.Log("Heartbeat re-established after a failure; running the bridge self-test.");
+                            await _selfTest.RunAsync(_cfg, _printers.All, _startedUtc, ct);
+                        }
+                        // First successful heartbeat: fetch the
+                        // dashboard-held machine config, auto-
+                        // configure slicers, then self-test.
+                        if (!_firstHeartbeatDone)
+                        {
+                            _firstHeartbeatDone = true;
+                            await ApplyConfigChangeAsync(ct);
+                        }
+                        await CheckMachineConfigVersionAsync(ct);
+                    }
+                    else
+                    {
+                        _heartbeatFailed = true;
+                    }
                 }
 
                 // 3. Job poll + execution + monitoring.
@@ -362,6 +467,15 @@ public sealed class Worker
                 // its own failure handling inside PollAsync.
                 if (_dashboard.HasKey && !_dashboard.KeyRejected)
                     await _farmPoller.PollAsync(statuses, ct);
+
+                // MQTT-PUSH WATCHDOG (2026.1109.2140): a
+                // Bambu printer whose push feed has gone
+                // silent is recovered, not just reported —
+                // longer-wait pushall with backoff, printing
+                // printers from 5 minutes, idle from 10.
+                // The mqtt_push_silent report still fires
+                // at 10 minutes, once per episode.
+                await _mqttWatchdog.CheckAsync(_printers.All, statuses, _startedUtc, ct);
 
                 await MonitorActiveJobsAsync(statuses, ct);
                 // Snapshot-route latch expires after 10 minutes
@@ -487,6 +601,11 @@ public sealed class Worker
                     JobKey = job.JobKey, OrderId = job.OrderId, PrinterName = job.PrinterName,
                     Status = "failed", Reason = upReason,
                 }, ct);
+                // BRIDGE-CONFIG HEALTH (2026.1109.2139): an
+                // FTPS upload failure is an error report too
+                // (upload_failed, source upload, with job_id).
+                await _errorReporter.ReportAsync("upload_failed", "error", "upload",
+                    $"Upload of job {job.JobKey} to '{job.PrinterName}' failed.", upReason, job.JobKey, "", ct);
                 continue;
             }
 

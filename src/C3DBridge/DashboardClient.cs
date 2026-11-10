@@ -40,7 +40,19 @@ public sealed class DashboardClient : IDisposable
     // for the slicer-presence check in the heartbeat block.
     private readonly string? _machineId;
     private readonly string? _machineName;
-    private readonly BridgeConfig? _config;
+    // BRIDGE-CONFIG HEALTH (2026.1109.2139): the config
+    // this client reports the slice_machine block from.
+    // UpdateConfig replaces it when a fetched machine
+    // config or SlicerSetup changes the local config, so
+    // the heartbeat block reflects the new slicer paths
+    // without a restart.
+    private BridgeConfig? _config;
+    /// <summary>Highest machine_config_version seen in a
+    /// heartbeat/status response body so far (0 = none
+    /// seen yet). The Worker re-fetches the machine
+    /// config when this passes the version it last
+    /// applied (CONTRACT.md §Q.1).</summary>
+    public int MachineConfigVersionSeen { get; private set; }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -75,6 +87,35 @@ public sealed class DashboardClient : IDisposable
     {
         _apiKey = apiKey;
         _keyRejected = false;
+    }
+
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139):
+    /// replace the config the slice_machine heartbeat block
+    /// is built from (after a machine-config fetch or a
+    /// SlicerSetup discovery changed the local config on
+    /// disk). The caller owns the save; this only swaps
+    /// the in-memory reference.</summary>
+    public void UpdateConfig(BridgeConfig config)
+    {
+        _config = config;
+    }
+
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139):
+    /// read machine_config_version out of a heartbeat/status
+    /// response body, following the AdoptRotatedKey pattern
+    /// (a missing or unreadable value is not a version —
+    /// ignore it silently). Only ever moves forward.</summary>
+    private void ReadMachineConfigVersion(string body)
+    {
+        if (string.IsNullOrEmpty(body)) return;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("machine_config_version", out var el) || el.ValueKind != JsonValueKind.Number) return;
+            if (!el.TryGetInt32(out var version) || version <= 0) return;
+            if (version > MachineConfigVersionSeen) MachineConfigVersionSeen = version;
+        }
+        catch { return; }
     }
 
     /// <summary>KEY AUTO-RESYNC (2026.1105, owner rule: a key that
@@ -202,7 +243,11 @@ public sealed class DashboardClient : IDisposable
         var block = SliceMachineBlock(sliceStatus);
         if (block is not null) payload["slice_machine"] = block;
         var (ok, _, body) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/heartbeat", payload, ct);
-        if (ok) AdoptRotatedKey(body);
+        if (ok)
+        {
+            AdoptRotatedKey(body);
+            ReadMachineConfigVersion(body);
+        }
         return ok;
     }
 
@@ -323,8 +368,46 @@ public sealed class DashboardClient : IDisposable
         var statusBlock = SliceMachineBlock(sliceStatus);
         if (statusBlock is not null) payload["slice_machine"] = statusBlock;
         var (ok, _, body) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/status", payload, ct);
-        if (ok) AdoptRotatedKey(body);
+        if (ok)
+        {
+            AdoptRotatedKey(body);
+            ReadMachineConfigVersion(body);
+        }
         return ok;
+    }
+
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139,
+    /// CONTRACT.md §Q.1): fetch the dashboard-held
+    /// per-machine config — GET bridge/machine-config?
+    /// machine_id=…. Follows the slice-jobs poll pattern
+    /// (same Bearer key, same 404/401 handling). Returns
+    /// null on any failure; the caller logs the reason and
+    /// keeps the local config. In legacy mode (no
+    /// machine_id) there is nothing to fetch.</summary>
+    public async Task<(MachineConfig? Config, string? Problem)> GetMachineConfigAsync(CancellationToken ct)
+    {
+        if (_machineId is null)
+            return (null, "No machine_id configured (legacy mode); machine config is not fetched.");
+        var (ok, status, body) = await SendAsync(HttpMethod.Get,
+            "/wp-json/c3d-shipping/v1/bridge/machine-config?machine_id=" + Uri.EscapeDataString(_machineId), null, ct);
+        if (!ok)
+        {
+            if (status == HttpStatusCode.NotFound)
+                return (null, "Dashboard machine-config endpoint is not installed yet.");
+            if (status == HttpStatusCode.Unauthorized)
+                return (null, "Bridge API key was rejected by the dashboard.");
+            return (null, $"Machine config fetch failed ({(int)status}): {Trim(body)}");
+        }
+        try
+        {
+            var config = JsonSerializer.Deserialize<MachineConfig>(body, JsonOptions);
+            if (config is null) return (null, "Dashboard returned a machine config the bridge could not read (empty).");
+            return (config, null);
+        }
+        catch (Exception ex)
+        {
+            return (null, $"Dashboard returned a machine config the bridge could not read: {ex.Message}");
+        }
     }
 
     /// <summary>Fetch jobs the dashboard assigned to this bridge.
@@ -869,6 +952,71 @@ public sealed class DashboardClient : IDisposable
         var (ok, code, body) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/ocr-report",
             new { job_id = jobId, text, engine, status, reason }, ct);
         return ok ? (true, "") : (false, $"OCR report answered {(int)code}: {Trim(body)}");
+    }
+
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139,
+    /// CONTRACT.md §Q.3): report a self-test run to POST
+    /// bridge/self-test. overall is "pass" / "fail"; each
+    /// check carries check / printer_ip / printer_name /
+    /// result ("pass" / "fail" / "skip") / detail. NOTE
+    /// for the contract checker: this method contains
+    /// ONLY the payload anonymous object and the
+    /// check-item anonymous objects — no other `new {`
+    /// anywhere in it, or their keys would be mistaken
+    /// for sent keys and fail the check.</summary>
+    public async Task<bool> ReportSelfTestAsync(IReadOnlyList<SelfTestCheck> checks, string overall, CancellationToken ct)
+    {
+        var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/self-test",
+            new
+            {
+                machine_id = _machineId ?? "",
+                machine_name = _machineName ?? _bridgeName,
+                version = Program.Version,
+                ran_unix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                overall,
+                checks = checks.Select(c => new
+                {
+                    check = c.Check,
+                    printer_ip = c.PrinterIp,
+                    printer_name = c.PrinterName,
+                    result = c.Result,
+                    detail = c.Detail,
+                }),
+            }, ct);
+        return ok;
+    }
+
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139,
+    /// CONTRACT.md §Q.4): report one error to POST
+    /// bridge/error-report. The bridge reports ALL errors
+    /// here; the dashboard stores them and NOTIFIES (a
+    /// visible alert, not a silent list). error_code is one
+    /// of the contract's words; severity "error" /
+    /// "warning"; source "slice" / "upload" / "mqtt" /
+    /// "printer" / "slicer_config" / "self_test" /
+    /// "install" / "bridge". job_id / slice_job_id are ''
+    /// when unrelated. NOTE for the contract checker: this
+    /// method contains ONLY the payload anonymous object —
+    /// no other `new {` anywhere in it.</summary>
+    public async Task<bool> ReportErrorAsync(string errorCode, string severity, string source,
+        string message, string detail, string jobId, string sliceJobId, CancellationToken ct)
+    {
+        var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/bridge/error-report",
+            new
+            {
+                machine_id = _machineId ?? "",
+                machine_name = _machineName ?? _bridgeName,
+                version = Program.Version,
+                error_code = errorCode,
+                severity,
+                source,
+                message,
+                detail,
+                occurred_unix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                job_id = jobId,
+                slice_job_id = sliceJobId,
+            }, ct);
+        return ok;
     }
 
     public async Task<bool> ReportJobAsync(JobReport report, CancellationToken ct)

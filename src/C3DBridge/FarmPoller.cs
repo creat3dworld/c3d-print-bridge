@@ -74,6 +74,7 @@ public sealed class FarmPoller
     private readonly DashboardClient _dashboard;
     private readonly PrinterRegistry _printers;
     private readonly BridgeConfig _config;
+    private readonly ErrorReporter _errors;
     private readonly HashSet<string> _loggedHold = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _loggedDispatch = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>AMS SAFETY REPORT (2026.1109): true once the
@@ -125,11 +126,12 @@ public sealed class FarmPoller
         // without it ever having been reported started.
         bool BedWatchPending = false);
 
-    public FarmPoller(DashboardClient dashboard, PrinterRegistry printers, BridgeConfig config)
+    public FarmPoller(DashboardClient dashboard, PrinterRegistry printers, BridgeConfig config, ErrorReporter errors)
     {
         _dashboard = dashboard;
         _printers = printers;
         _config = config;
+        _errors = errors;
     }
 
     /// <summary>Bridge-known light state for a printer
@@ -598,6 +600,12 @@ public sealed class FarmPoller
             Cleanup(tempPath);
             Program.Log($"[farm] Job {job.JobId} upload to '{adapter.Name}' failed: {upReason}");
             await _dashboard.ReportFarmJobAsync(job.JobId, "failed", upReason, null, ct);
+            // BRIDGE-CONFIG HEALTH (2026.1109.2139): an
+            // FTPS upload failure is an error report too
+            // (upload_failed, source upload, with job_id) —
+            // alongside the farm job report, not instead.
+            await _errors.ReportAsync("upload_failed", "error", "upload",
+                $"Upload of farm job {job.JobId} to '{adapter.Name}' failed.", upReason, job.JobId, "", ct);
             return;
         }
         var (startOk, startReason) = await adapter.StartPrintAsync(fileName, job.JobId, ct, tempPath);
@@ -754,6 +762,9 @@ public sealed class FarmPoller
                 var bedReason = $"Printer '{printerName}' reports foreign objects on the build plate (HMS 0300-8017) — the printer's own start-time bed check found the bed occupied. Job failed; the bed was never confirmed empty.";
                 Program.Log($"[farm] Job {active.Job.JobId} on '{printerName}': failed — {bedReason}");
                 await _dashboard.ReportFarmJobAsync(active.Job.JobId, "failed", bedReason, null, ct);
+                await _errors.ReportAsync("printer_fault", "error", "printer",
+                    $"Farm job {active.Job.JobId} failed: printer '{printerName}' reports foreign objects on the build plate (HMS 0300-8017).",
+                    bedReason, active.Job.JobId, "", ct);
                 continue;
             }
             if (live.State == "printing")
@@ -791,6 +802,13 @@ public sealed class FarmPoller
                     (string.IsNullOrWhiteSpace(live.Detail) ? "." : $": {live.Detail}");
                 Program.Log($"[farm] Job {active.Job.JobId} on '{printerName}': failed — {reason}");
                 await _dashboard.ReportFarmJobAsync(active.Job.JobId, "failed", reason, null, ct);
+                // BRIDGE-CONFIG HEALTH (2026.1109.2139):
+                // a printer-reported error on a farm job is
+                // a printer_fault error report (with job_id),
+                // alongside the farm job report.
+                await _errors.ReportAsync("printer_fault", "error", "printer",
+                    $"Farm job {active.Job.JobId} failed: printer '{printerName}' reports an error.",
+                    reason, active.Job.JobId, "", ct);
                 continue;
             }
             if (live.State == "offline")

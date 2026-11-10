@@ -254,6 +254,18 @@ public sealed record BridgeConfig
     /// "Sliced G-code files". Farm jobs fall back to this
     /// folder when the dashboard file download fails.</summary>
     [JsonPropertyName("drive_sliced_folder")] public string DriveSlicedFolder { get; init; } = "Sliced G-code files";
+    /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139) —
+    /// dashboard-held slicer default install locations
+    /// (CONTRACT.md §Q.1/Q.5), keyed by slicer word
+    /// ("bambu-studio" / "snapmaker-orca" / "orcaslicer")
+    /// to a default install directory. Served by GET
+    /// bridge/machine-config and written into
+    /// bridge-setup.json for new installs; SlicerSetup
+    /// discovers slicers there. '' / absent = not set —
+    /// the C:\Program Files fallback applies. Bridge-local
+    /// only, never sent to the dashboard (the dashboard
+    /// already holds these values).</summary>
+    [JsonPropertyName("slicer_default_locations")] public Dictionary<string, string> SlicerDefaultLocations { get; init; } = new();
     [JsonPropertyName("printers")] public List<PrinterConfig> Printers { get; init; } = new();
 }
 
@@ -373,6 +385,46 @@ public sealed record SliceJob
     [JsonPropertyName("preset_printer")] public string PresetPrinter { get; init; } = "";
     [JsonPropertyName("preset_process")] public string PresetProcess { get; init; } = "";
     [JsonPropertyName("preset_filament")] public string PresetFilament { get; init; } = "";
+}
+
+/// <summary>Dashboard-held per-machine config from GET
+/// bridge/machine-config (CONTRACT.md §Q.1, 2026.1109.2139).
+/// One flat object (no envelope). The bridge fetches it on
+/// startup and whenever a heartbeat/status response carries
+/// a machine_config_version higher than the version it last
+/// applied. slicer_paths are applied only for slicers whose
+/// local path is blank or points at a missing exe — a
+/// working local path is never clobbered. The printers list
+/// is applied only when the local printer list is empty
+/// (fresh/rebuilt bridge). The field names here are the
+/// contract's exactly — the contract checker reads them
+/// from this record.</summary>
+public sealed record MachineConfig
+{
+    [JsonPropertyName("machine_id")] public string MachineId { get; init; } = "";
+    [JsonPropertyName("machine_name")] public string MachineName { get; init; } = "";
+    /// <summary>Dashboard's slicer default install locations
+    /// (Settings / Configuration), keyed by slicer word to
+    /// a default install directory; '' = not set.</summary>
+    [JsonPropertyName("slicer_default_locations")] public Dictionary<string, string> SlicerDefaultLocations { get; init; } = new();
+    /// <summary>Dashboard-held per-machine slicer exe paths,
+    /// keyed by slicer word; '' = not configured.</summary>
+    [JsonPropertyName("slicer_paths")] public Dictionary<string, string> SlicerPaths { get; init; } = new();
+    [JsonPropertyName("printers")] public List<MachineConfigPrinter> Printers { get; init; } = new();
+    [JsonPropertyName("bridge_version_latest")] public string BridgeVersionLatest { get; init; } = "";
+    [JsonPropertyName("machine_config_version")] public int MachineConfigVersion { get; init; }
+}
+
+/// <summary>One printer in the dashboard-held machine
+/// config (CONTRACT.md §Q.1). The dashboard's stored
+/// printer list for this machine — names, IPs, types and
+/// serials only; no access codes ever cross here.</summary>
+public sealed record MachineConfigPrinter
+{
+    [JsonPropertyName("printer_name")] public string PrinterName { get; init; } = "";
+    [JsonPropertyName("printer_ip")] public string PrinterIp { get; init; } = "";
+    [JsonPropertyName("printer_type")] public string PrinterType { get; init; } = "";
+    [JsonPropertyName("serial")] public string Serial { get; init; } = "";
 }
 
 /// <summary>One Blender mesh job from GET farm/blender-jobs
