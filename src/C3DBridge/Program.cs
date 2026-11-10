@@ -41,7 +41,7 @@ namespace C3DBridge;
 
 public static class Program
 {
-    public const string Version = "2026.1109.2109-ams-safety-bed-watch";
+    public const string Version = "2026.1109.2136-printer-moved-names";
 
     // Single-instance, newest-wins: only one bridge runs at a time.
     // A running instance writes its version + pid to a temp file.

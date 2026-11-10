@@ -671,11 +671,11 @@ public sealed class DashboardClient : IDisposable
         var (ok, _, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/printer-moved",
             new
             {
-                name,
-                type,
+                printer_name = name,
+                printer_type = type,
                 old_ip = oldIp,
                 new_ip = newIp,
-                match_evidence = matchEvidence,
+                evidence = matchEvidence,
                 serial,
             }, ct);
         return ok;

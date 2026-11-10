@@ -1,0 +1,28 @@
+C3D Print Bridge - version 2026.1109.2136-printer-moved-names
+What is new in this version (vs 2026.1109.2109-ams-safety-bed-watch):
+
+- Printer-moved report naming fix (Nov 9, 2026): the bridge's
+  ReportPrinterMovedAsync POSTed /wp-json/c3d-shipping/v1/farm/printer-moved
+  with keys `name`, `type`, `match_evidence`, but the dashboard handler
+  (C3D_Watchtower::rest_printer_moved) reads `printer_name`, `printer_type`,
+  `evidence`. Because `printer_name` was absent the handler returned 400
+  "A printer move report must name the printer and both addresses" - every
+  printer-move report failed. The bridge now sends the dashboard's names:
+  `printer_name = name`, `printer_type = type`, `evidence = matchEvidence`.
+  `old_ip`, `new_ip`, `serial` were already correct and are unchanged.
+  The dashboard's names are canonical; the fix is on the bridge side only.
+  No method signature, caller, or other behaviour changed.
+- NOT SHIPPED YET (Nov 9, 2026): the build is clean (0 warnings, 0 errors)
+  but the naming contract check still FAILs - 20 passed, 1 failed - because
+  CONTRACT.json itself still lists the old wrong names in `bridge_sends`
+  for POST /wp-json/c3d-shipping/v1/farm/printer-moved
+  (`name`, `type`, `match_evidence`) and marks the entry NON-CONFORMING.
+  The contract file must be updated to the canonical names
+  (`printer_name`, `printer_type`, `evidence`) before the check can pass
+  and this build can be pushed. That is a contract-file change, out of
+  scope for this bridge-side fix. A FAIL blocks the ship.
+
+Files changed (3):
+- src/C3DBridge/DashboardClient.cs - ReportPrinterMovedAsync key renames only.
+- src/C3DBridge/Program.cs - version bump only.
+- CHANGES-2026.1109.2136-printer-moved-names.txt - this document.
