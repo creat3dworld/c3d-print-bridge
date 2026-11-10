@@ -164,6 +164,13 @@ public sealed class BambuAdapter : IPrinterAdapter
                 if (pe.ValueKind == JsonValueKind.Number && pe.TryGetUInt32(out var peNum)) printError = peNum;
                 else if (pe.ValueKind == JsonValueKind.String && uint.TryParse(pe.GetString(), out var peStr)) printError = peStr;
             }        var hmsText = "";
+        // BED WATCH BUILD (2026.1109): the same HMS entries,
+        // canonicalized, ride on the status so the farm
+        // monitor can watch for 0300-8017 (foreign objects
+        // on the build plate) after a delegated start. A
+        // code that cannot be canonicalized is dropped,
+        // never guessed.
+        var hmsCodes = new List<string>();
         if (print.TryGetProperty("hms", out var hms) && hms.ValueKind == JsonValueKind.Array)
             {
                 foreach (var entry in hms.EnumerateArray())
@@ -171,6 +178,9 @@ public sealed class BambuAdapter : IPrinterAdapter
                         var code = entry.TryGetProperty("code", out var hc) ? hc.GetRawText() : "?";
                         var attr = entry.TryGetProperty("attr", out var ha) ? ha.GetRawText() : "?";
                         hmsText += (hmsText.Length == 0 ? "" : ",") + code + ":" + attr;
+                        var canon = CanonicalHmsCode(code);
+                        if (canon is not null && !hmsCodes.Contains(canon, StringComparer.OrdinalIgnoreCase))
+                            hmsCodes.Add(canon);
                     }
                 }
         var pushSummary = $"gcode_state={gcodeState} subtask_id={subtaskId}"
@@ -221,6 +231,9 @@ public sealed class BambuAdapter : IPrinterAdapter
                 ProgressPercent = percent,
                 RemainingSeconds = remaining,
                 Detail = detail,
+                // BED WATCH BUILD (2026.1109): canonical HMS
+                // codes from this same fresh report.
+                HmsCodes = hmsCodes,
                 Ams = ParseAms(print),
                 CameraAvailable = _cfg.Camera, // camera_available means the printer HAS a camera, not that a still URL is configured; snapshot fetching still needs SnapshotUrl separately
                 // 2026.1105-gate-light: printer-confirmed light
@@ -1024,6 +1037,39 @@ public sealed class BambuAdapter : IPrinterAdapter
     /// report". Anything else (missing sections, wrong
     /// shape, any mode other than on/off) is null =
     /// unreported, never a guess.</summary>
+    /// <summary>BED WATCH BUILD (2026.1109): canonicalize one
+    /// HMS code from the printer's report to "XXXX-XXXX"
+    /// form. Bambu reports the code either as a JSON number
+    /// (the 32-bit HMS value, e.g. 50364439 = 0x03008017) or
+    /// as a string ("0300-8017" / "03008017"). Anything else
+    /// returns null — an unparseable code is dropped, never
+    /// guessed. Assumption to confirm on the first live run:
+    /// the numeric form is the packed 32-bit value (module
+    /// in the high 16 bits); the existing push-summary log
+    /// already records the raw hms=[...] text on every
+    /// change, so a code that fails to canonicalize leaves
+    /// evidence instead of silence.</summary>
+    private static string? CanonicalHmsCode(string raw)
+    {
+        var t = (raw ?? "").Trim().Trim('"');
+        if (string.IsNullOrWhiteSpace(t)) return null;
+        // Numeric form: the packed 32-bit HMS value.
+        if (uint.TryParse(t, out var num))
+        {
+            var hex = num.ToString("X8");
+            return hex[..4] + "-" + hex[4..];
+        }
+        // String form: strip separators, must be exactly
+        // 8 hex digits.
+        var digits = "";
+        foreach (var c in t)
+        {
+            if (Uri.IsHexDigit(c)) digits += char.ToUpperInvariant(c);
+        }
+        if (digits.Length != 8) return null;
+        return digits[..4] + "-" + digits[4..];
+    }
+
     /// <summary>DIAG BUILD (2026.1105): one-line description
     /// of what a fresh report actually carries for
     /// lights_report, so a failed verification leaves

@@ -456,6 +456,25 @@ public sealed class DashboardClient : IDisposable
         return ok;
     }
 
+    /// <summary>AMS SAFETY REPORT (2026.1109): report one AMS
+    /// verdict for a queued farm job to POST farm/safety-report.
+    /// The dashboard sets the job's ams_confirmed flag from
+    /// ams_match, which is what lets Start enable without a
+    /// manual AMS confirmation. Only ams_match is ever sent
+    /// here — bed_vacant is NEVER reported by this bridge: the
+    /// bridge cannot see the bed (no vision analysis, by
+    /// design — see Safety.cs), so it never claims a bed is
+    /// empty. Returns (ok, status): a 404 means the dashboard
+    /// plugin does not have the safety-report route yet, and
+    /// the caller stops reporting until restart instead of
+    /// spamming it, exactly like the bed-snapshot rule.</summary>
+    public async Task<(bool Ok, System.Net.HttpStatusCode Status)> ReportSafetyAsync(string jobId, bool amsMatch, CancellationToken ct)
+    {
+        var (ok, status, _) = await SendAsync(HttpMethod.Post, "/wp-json/c3d-shipping/v1/farm/safety-report",
+            new { job_id = jobId, ams_match = amsMatch }, ct);
+        return (ok, status);
+    }
+
     /// <summary>BRIDGE-READS BUILD: report a streaming G-code
     /// parse for a farm job to the dashboard's farm/job-report
     /// route with status "file_parsed". The dashboard stores

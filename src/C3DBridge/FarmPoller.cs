@@ -9,6 +9,16 @@
 // before it dispatches. This poller is the bridge side:
 //
 //  - Poll GET /wp-json/c3d-shipping/v1/farm/jobs.
+//  - AMS SAFETY REPORT (2026.1109): for every queued job
+//    on a printer this bridge serves, evaluate the AMS
+//    match from live telemetry and POST a proven verdict
+//    (ams_match true/false) to farm/safety-report, so the
+//    dashboard's ams_confirmed flag can clear with no
+//    manual AMS confirmation. A verdict is only ever a
+//    proven match or a proven contradiction — incomparable
+//    values or missing data report nothing, never a guess.
+//    bed_vacant is NEVER reported: the bridge cannot see
+//    the bed, so the bed check stays manual.
 //  - For dispatch=start: resolve the printer by name, then
 //    by IP (never a substitute), require it idle right now,
 //    require both dashboard safety flags, require a live AMS
@@ -66,6 +76,13 @@ public sealed class FarmPoller
     private readonly BridgeConfig _config;
     private readonly HashSet<string> _loggedHold = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _loggedDispatch = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>AMS SAFETY REPORT (2026.1109): true once the
+    /// dashboard has answered the safety-report route with
+    /// 404 — the route is not installed on that dashboard —
+    /// so the reporter stops posting until restart instead
+    /// of spamming a missing endpoint every poll, exactly
+    /// like the bed-snapshot rule.</summary>
+    private bool _safetyEndpointMissing;
     private readonly HashSet<string> _startedFarm = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, FarmActive> _activeFarm = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _lightStates = new(StringComparer.OrdinalIgnoreCase);
@@ -100,7 +117,13 @@ public sealed class FarmPoller
         IPrinterAdapter Adapter,
         DateTime StartedAt,
         bool PrintConfirmed,
-        DateTime LastSeenOnline);
+        DateTime LastSeenOnline,
+        // BED WATCH BUILD (2026.1109): true while a delegated
+        // Bambu job waits for print confirmation — its
+        // "started" report is held until printing confirms,
+        // so an HMS 0300-8017 bed failure can fail the job
+        // without it ever having been reported started.
+        bool BedWatchPending = false);
 
     public FarmPoller(DashboardClient dashboard, PrinterRegistry printers, BridgeConfig config)
     {
@@ -133,6 +156,18 @@ public sealed class FarmPoller
                 Program.Log($"[farm] Poll failed: {problem}");
             return;
         }
+        // AMS SAFETY REPORT (2026.1109): before any dispatch
+        // handling, report a proven AMS verdict for every
+        // queued job on a printer this bridge serves, so the
+        // dashboard's ams_confirmed flag can clear with no
+        // manual AMS confirmation. A report only fires when
+        // the live verdict differs from the dashboard flag,
+        // so a confirmed job is never re-reported and a
+        // failed report retries on the next poll.
+        foreach (var job in jobs)
+        {
+            await ReportAmsSafetyAsync(job, statuses, ct);
+        }
         foreach (var job in jobs)
         {
             var dispatch = (job.Dispatch ?? "").Trim().ToLowerInvariant();
@@ -157,6 +192,130 @@ public sealed class FarmPoller
             }
         }
         await MonitorFarmActiveAsync(statuses, ct);
+    }
+
+    /// <summary>AMS SAFETY REPORT (2026.1109): for one queued
+    /// farm job, evaluate the AMS match from live printer
+    /// telemetry and report a proven verdict to the
+    /// dashboard's farm/safety-report route, so the job's
+    /// ams_confirmed flag can clear with no manual AMS
+    /// confirmation. Only jobs on a printer this bridge
+    /// serves are evaluated (adapter resolved by name, then
+    /// IP — never a substitute), and only while that printer
+    /// is idle: a busy printer's AMS state is mid-use, not a
+    /// verdict. A report fires only when the live verdict
+    /// differs from the dashboard's current flag — a
+    /// confirmed job is never re-reported, a failed report
+    /// retries on the next poll, and a re-queued job (whose
+    /// flags the dashboard reset) is re-reported on the
+    /// next poll because the flag disagrees again. A job
+    /// whose verdict cannot be proven reports nothing, and
+    /// bed_vacant is never sent: this bridge cannot see the
+    /// bed, so the bed check stays manual until a bed
+    /// solution exists.</summary>
+    private async Task ReportAmsSafetyAsync(FarmJob job, IReadOnlyDictionary<string, PrinterStatus> statuses, CancellationToken ct)
+    {
+        if (_safetyEndpointMissing)
+            return;
+        var status = (job.Status ?? "").Trim().ToLowerInvariant();
+        if (status != "queued" && status != "pending_bridge_confirmation")
+            return;
+        var adapter = _printers.Find(job.Printer);
+        adapter ??= _printers.All.FirstOrDefault(a =>
+            string.Equals(a.Ip, job.PrinterIp, StringComparison.OrdinalIgnoreCase));
+        if (adapter is null)
+            return;
+        if (!statuses.TryGetValue(adapter.Name, out var live) ||
+            !string.Equals(live.State, "idle", StringComparison.OrdinalIgnoreCase))
+            return;
+        var verdict = EvaluateAmsMatch(job, live);
+        if (verdict is null || verdict.Value == job.AmsConfirmed)
+            return;
+        var (ok, code) = await _dashboard.ReportSafetyAsync(job.JobId, verdict.Value, ct);
+        if (!ok)
+        {
+            if (code == System.Net.HttpStatusCode.NotFound)
+            {
+                _safetyEndpointMissing = true;
+                Program.Log("[farm] AMS safety report: the dashboard has no farm/safety-report route yet — AMS auto-confirm is off until the dashboard is updated. No further safety reports will be sent this run.");
+            }
+            else
+            {
+                Program.Log($"[farm] AMS safety report for job {job.JobId} did not reach the dashboard ({(int)code}); it will retry on the next poll.");
+            }
+            return;
+        }
+        Program.Log(verdict.Value
+            ? $"[farm] Job {job.JobId}: live AMS matches the job ({job.Material} {job.Color}) on '{adapter.Name}' — AMS confirmed to the dashboard."
+            : $"[farm] Job {job.JobId}: live AMS contradicts the job ({job.Material} {job.Color}) on '{adapter.Name}' — AMS unconfirmed to the dashboard.");
+    }
+
+    /// <summary>AMS SAFETY REPORT (2026.1109): the live AMS
+    /// verdict for a job, from the printer's own telemetry.
+    /// Returns true only on a PROVEN match, false only on a
+    /// PROVEN contradiction, and null whenever the verdict
+    /// cannot be told — never a guess. Source: the job's own
+    /// slot when it maps to a live tray (the same
+    /// SlotToToolIndex mapping and tray-id comparison as the
+    /// start-time per-slot gate); when the job names no
+    /// mappable slot, the single-tray aggregate — but only
+    /// when the printer reports exactly one populated tray
+    /// (Ams.Known). A job slot that maps but whose tray the
+    /// printer does not report is unknowable, not the
+    /// aggregate's tray: it returns null instead of
+    /// comparing against a different tray. Material compares
+    /// case-insensitively; color uses the same three-way
+    /// split as Safety (ColorsMatch = match, ColorsContradict
+    /// = contradiction, neither = incomparable, e.g. a name
+    /// versus a hex value — null). A blank job material or
+    /// color is no requirement on that side; a blank live
+    /// value where the job requires one is missing data
+    /// (null); a job with no material AND no color
+    /// requirement reports nothing. The U1 always returns
+    /// null: its adapter reports no AMS data at all
+    /// ("unverifiable"), so U1 jobs keep needing a manual
+    /// AMS confirmation.</summary>
+    private static bool? EvaluateAmsMatch(FarmJob job, PrinterStatus live)
+    {
+        (string Material, string Color) source;
+        var slotIdx = GcodeFileParser.SlotToToolIndex(job.AmsSlot);
+        if (slotIdx is not null)
+        {
+            var slot = live.Ams.Slots.FirstOrDefault(s =>
+                string.Equals(s.Slot.Trim(), slotIdx.Value.ToString(), StringComparison.Ordinal));
+            if (slot is null)
+                return null;
+            source = (slot.Material, slot.Color);
+        }
+        else if (live.Ams.Known)
+        {
+            source = (live.Ams.Material, live.Ams.Color);
+        }
+        else
+        {
+            return null;
+        }
+        var checkedAny = false;
+        if (!string.IsNullOrWhiteSpace(job.Material))
+        {
+            if (string.IsNullOrWhiteSpace(source.Material))
+                return null;
+            if (!string.Equals(job.Material.Trim(), source.Material.Trim(), StringComparison.OrdinalIgnoreCase))
+                return false;
+            checkedAny = true;
+        }
+        if (!string.IsNullOrWhiteSpace(job.Color))
+        {
+            if (string.IsNullOrWhiteSpace(source.Color))
+                return null;
+            if (Safety.ColorsMatch(job.Color, source.Color))
+                checkedAny = true;
+            else if (Safety.ColorsContradict(job.Color, source.Color))
+                return false;
+            else
+                return null;
+        }
+        return checkedAny ? true : (bool?)null;
     }
 
     private async Task TryStartFarmJobAsync(FarmJob job, IReadOnlyDictionary<string, PrinterStatus> statuses, CancellationToken ct)
@@ -190,10 +349,20 @@ public sealed class FarmPoller
             // Busy, offline, or unknown: leave queued, retry later.
             return;
         }
-        if (!job.BedConfirmed || !job.AmsConfirmed)
+        // BED WATCH BUILD (2026.1109): a Bambu job whose bed
+        // check the dashboard delegated to the printer may
+        // start without the manual bed flag — the printer's
+        // own start-time foreign-object detection is the bed
+        // checker, and the bridge watches for its failure
+        // code after dispatch (see the monitor). A delegated
+        // marker on a non-Bambu printer is NOT honoured (the
+        // U1 has no printer-side bed detection); such a job
+        // stays held on the manual gate.
+        var bedDelegated = job.BedCheckDelegatedToPrinter && adapter is BambuAdapter;
+        if ((!job.BedConfirmed && !bedDelegated) || !job.AmsConfirmed)
         {
             await ReportHoldAsync(job.JobId, "gates",
-                $"[farm] Job {job.JobId} dispatch=start, but dashboard safety flags are not both confirmed (bed={job.BedConfirmed}, ams={job.AmsConfirmed}). Job left queued; bridge never starts on an unconfirmed gate.", ct);
+                $"[farm] Job {job.JobId} dispatch=start, but dashboard safety flags are not both confirmed (bed={job.BedConfirmed}, ams={job.AmsConfirmed}{(bedDelegated ? ", bed delegated to printer" : "")}). Job left queued; bridge never starts on an unconfirmed gate.", ct);
             return;
         }
         ClearHold(job.JobId, "gates");
@@ -441,12 +610,28 @@ public sealed class FarmPoller
         }
         Cleanup(tempPath);
         _startedFarm.Add(job.JobId);
-        _activeFarm[adapter.Name] = new FarmActive(job, adapter, DateTime.UtcNow, false, DateTime.UtcNow);
-        var reported = await _dashboard.ReportFarmJobAsync(job.JobId, "started",
-            $"Start command forwarded to '{adapter.Name}'. Printing is confirmed by later status polls.", null, ct);
-        Program.Log(reported
-            ? $"[farm] Job {job.JobId} ('{job.Title}') started on '{adapter.Name}'."
-            : $"[farm] Job {job.JobId} ('{job.Title}') start command sent to '{adapter.Name}', but the 'started' report did not reach the dashboard — the job is monitored here and its finish will still be reported.");
+        _activeFarm[adapter.Name] = new FarmActive(job, adapter, DateTime.UtcNow, false, DateTime.UtcNow, bedDelegated);
+        if (bedDelegated)
+        {
+            // BED WATCH: the "started" report waits until the
+            // print is confirmed started. If the printer's
+            // start-time bed check fires first (HMS 0300-8017),
+            // the monitor fails the job with the bed reason
+            // and it is NEVER reported started. The monitor
+            // owns the outcome from here; fast polling stays
+            // on while the start is unconfirmed
+            // (HasUnconfirmedStart), so the verdict lands
+            // within ~one tick.
+            Program.Log($"[farm] Job {job.JobId} ('{job.Title}') start command sent to '{adapter.Name}' (bed check delegated to printer); 'started' waits for print confirmation.");
+        }
+        else
+        {
+            var reported = await _dashboard.ReportFarmJobAsync(job.JobId, "started",
+                $"Start command forwarded to '{adapter.Name}'. Printing is confirmed by later status polls.", null, ct);
+            Program.Log(reported
+                ? $"[farm] Job {job.JobId} ('{job.Title}') started on '{adapter.Name}'."
+                : $"[farm] Job {job.JobId} ('{job.Title}') start command sent to '{adapter.Name}', but the 'started' report did not reach the dashboard — the job is monitored here and its finish will still be reported.");
+        }
     }
 
     private async Task TryPauseFarmJobAsync(FarmJob job, IReadOnlyDictionary<string, PrinterStatus> statuses, CancellationToken ct)
@@ -533,6 +718,15 @@ public sealed class FarmPoller
         }
     }
 
+    /// <summary>BED WATCH BUILD (2026.1109): true when the live
+    /// status carries HMS 0300-8017 (foreign objects on the
+    /// build plate), canonical "XXXX-XXXX" form. Codes are
+    /// matched exactly; an absent or empty list is no
+    /// failure, never a guess.</summary>
+    private static bool HasForeignObjectHms(PrinterStatus live) =>
+        live.HmsCodes is not null && live.HmsCodes.Any(c =>
+            string.Equals((c ?? "").Trim(), "0300-8017", StringComparison.OrdinalIgnoreCase));
+
     private async Task MonitorFarmActiveAsync(IReadOnlyDictionary<string, PrinterStatus> statuses, CancellationToken ct)
     {
         foreach (var printerName in _activeFarm.Keys.ToList())
@@ -540,9 +734,45 @@ public sealed class FarmPoller
             var active = _activeFarm[printerName];
             if (!statuses.TryGetValue(printerName, out var live))
                 continue;
+            // BED WATCH BUILD (2026.1109): a delegated Bambu
+            // job whose printer reports HMS 0300-8017 before
+            // the print is confirmed started has failed the
+            // printer's own bed check. Report FAILED with the
+            // bed reason — and never report it started (no
+            // "started" report was sent for a bed-watch job).
+            // Only while the print is unconfirmed and the
+            // printer is not printing: once printing, the
+            // detection passed and a lingering code is stale,
+            // never a failure. No auto-retry: the job ends
+            // here; a fresh start needs a fresh dispatch.
+            if (active.BedWatchPending && !active.PrintConfirmed &&
+                !string.Equals(live.State, "printing", StringComparison.OrdinalIgnoreCase) &&
+                HasForeignObjectHms(live))
+            {
+                _activeFarm.Remove(printerName);
+                _startedFarm.Remove(active.Job.JobId);
+                var bedReason = $"Printer '{printerName}' reports foreign objects on the build plate (HMS 0300-8017) — the printer's own start-time bed check found the bed occupied. Job failed; the bed was never confirmed empty.";
+                Program.Log($"[farm] Job {active.Job.JobId} on '{printerName}': failed — {bedReason}");
+                await _dashboard.ReportFarmJobAsync(active.Job.JobId, "failed", bedReason, null, ct);
+                continue;
+            }
             if (live.State == "printing")
             {
-                _activeFarm[printerName] = active with { PrintConfirmed = true, LastSeenOnline = DateTime.UtcNow };
+                var wasBedWatch = active.BedWatchPending;
+                _activeFarm[printerName] = active with { PrintConfirmed = true, BedWatchPending = false, LastSeenOnline = DateTime.UtcNow };
+                if (wasBedWatch)
+                {
+                    // The print confirmed started with no
+                    // 0300-8017: the printer's bed check
+                    // passed, so report started normally —
+                    // this is the first "started" report for
+                    // this job (none was sent at dispatch).
+                    var started = await _dashboard.ReportFarmJobAsync(active.Job.JobId, "started",
+                        $"Printing confirmed on '{printerName}' — the printer's start-time bed check passed (no foreign objects reported).", null, ct);
+                    Program.Log(started
+                        ? $"[farm] Job {active.Job.JobId} ('{active.Job.Title}') printing confirmed on '{printerName}' (bed check delegated to printer; passed)."
+                        : $"[farm] Job {active.Job.JobId} ('{active.Job.Title}') printing confirmed on '{printerName}', but the 'started' report did not reach the dashboard — the job is monitored here and its finish will still be reported.");
+                }
                 continue;
             }
             if (live.State == "idle" && active.PrintConfirmed)

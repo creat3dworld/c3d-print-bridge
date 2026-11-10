@@ -1,0 +1,96 @@
+C3D Print Bridge - version 2026.1109.2109-ams-safety-bed-watch
+What is new in this version (vs 2026.1109.0322-drive-install-one-prompt):
+- AMS safety report (Nov 9, 2026): the bridge now reports a proven
+  AMS verdict for every queued farm job on a printer it serves, by
+  POSTing { job_id, ams_match } to the dashboard's farm/safety-report
+  route (Bearer bridge key, same as every other dashboard request).
+  The dashboard sets the job's ams_confirmed flag from the report,
+  so Start can enable with no manual AMS confirmation. The report
+  runs in the farm poll loop before any dispatch handling, once per
+  job per verdict change: it fires only when the live verdict
+  differs from the dashboard's current flag, so a confirmed job is
+  never re-reported, a failed report retries on the next poll, and a
+  re-queued job (whose flags the dashboard reset) is re-reported
+  because the flag disagrees again.
+- The verdict is only ever a PROVEN match (ams_match=true) or a
+  PROVEN contradiction (ams_match=false). It reuses the comparison
+  rules in Safety.cs and the existing FarmPoller gate logic: the
+  job's own slot when it maps to a live tray (same SlotToToolIndex
+  mapping and tray-id comparison as the start-time per-slot gate),
+  else the single-tray aggregate — but only when the printer
+  reports exactly one populated tray (Ams.Known). Material compares
+  case-insensitively; color uses the same three-way split as
+  Safety (ColorsMatch = match, ColorsContradict = contradiction,
+  neither = incomparable, e.g. a name versus a hex value). A blank
+  job material/color is no requirement on that side; a blank live
+  value where the job requires one is missing data; a job slot that
+  maps but whose tray the printer does not report is unknowable,
+  never the aggregate's tray. Incomparable values, missing data,
+  a busy/offline/unknown printer, or a job with no material AND no
+  color requirement all report NOTHING — never a guess.
+- Post-dispatch bed watch (Nov 9, 2026 — Marlena chose "Let the
+  printer check at print start"): for a Bambu job whose bed check
+  the dashboard delegated to the printer, the bridge watches the
+  printer's reported HMS codes after forwarding the start
+  command. If HMS 0300-8017 "Foreign Objects on Build Plate"
+  appears before the print is confirmed started, the bridge
+  reports the job FAILED with the bed reason (objects on the bed
+  per the printer's own detection) through the existing
+  job-report path — and the job is NEVER reported started. If
+  the print confirms started with no 0300-8017, the bridge
+  reports started normally (the "started" report is held until
+  print confirmation for these jobs, so a bed failure can never
+  follow a started report). No auto-retry: a bed failure ends
+  the job; a fresh start needs a fresh dispatch.
+- How the watch is fed: BambuAdapter now surfaces the printer's
+  live HMS codes on the status as canonical "XXXX-XXXX" values
+  (hms_codes). The code arrives either as a JSON number (the
+  packed 32-bit HMS value, e.g. 50364439 = 0x03008017) or as a
+  string ("0300-8017" / "03008017"); an unparseable code is
+  dropped, never guessed. Assumption to confirm on the first
+  live run: the numeric form is the packed value (module in the
+  high 16 bits); the push-summary log already records the raw
+  hms=[...] text on every change, so a missed canonicalization
+  leaves evidence. The watch only fires while the print is
+  unconfirmed AND the printer is not printing: once printing,
+  the detection passed and a lingering code is stale, never a
+  failure. The existing 2-minute no-start bound still applies.
+- Dashboard contract (the dashboard build that enables this
+  must send it): the farm job JSON carries bed_check "printer"
+  exactly when the dashboard delegated the bed check to the
+  printer; anything else, including absent, means manual bed
+  confirmation (bed_confirmed flag) as before. The bridge
+  accepts a delegated Bambu job without the manual bed flag
+  (AMS must still be confirmed — by the AMS reporter above or
+  manually). A delegated marker on a non-Bambu printer is NOT
+  honoured: the U1 has no printer-side bed detection, so its
+  jobs keep manual bed confirmation on the dashboard side.
+- Honest limits, stated plainly:
+  - bed_vacant is STILL never reported. The bridge cannot see
+    the bed (no vision analysis — deliberately out of scope
+    for this thin relay, see Safety.cs), so it never claims a
+    bed is empty. The bed check for delegated Bambu jobs is
+    the printer's own start-time detection, watched after
+    dispatch — not a bridge verdict about the bed.
+  - The Snapmaker U1 can never auto-confirm AMS: its adapter
+    reports no AMS data at all ("U1 filament data is not exposed
+    by a verified Moonraker endpoint; AMS is unverifiable"), so U1
+    jobs always evaluate to "cannot tell" and keep needing a
+    manual AMS confirmation.
+  - A 404 from the safety-report route (an older dashboard without
+    the route) stops reporting until restart, instead of spamming
+    a missing endpoint every poll — the same rule as bed snapshots.
+  - A report only fires for printers this bridge serves (adapter
+    resolved by name, then IP — never a substitute) and only while
+    that printer is idle. A job on another bridge's printer is
+    left alone.
+How to install from this folder:
+  1. Get updates from the tray, or run Setup-Bridge.bat from inside
+     this folder (extracted, not inside the zip).
+  2. Your config and key are preserved.
+  3. A fresh install from the dashboard needs no setup step at
+     all: the packaged bridge-setup.json provisions the key on
+     first start. A GitHub-file install uses the pairing code:
+     dashboard -> Install bridge client -> copy the code, then
+     on the PC run `C3DBridge.exe setup --pairing-code <code>`.
+     The old `C3DBridge.exe setup` paste-the-key flow still works.

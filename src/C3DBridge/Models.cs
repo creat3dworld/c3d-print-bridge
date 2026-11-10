@@ -288,6 +288,19 @@ public sealed record FarmJob
     [JsonPropertyName("status")] public string Status { get; init; } = "";
     [JsonPropertyName("bed_confirmed")] public bool BedConfirmed { get; init; }
     [JsonPropertyName("ams_confirmed")] public bool AmsConfirmed { get; init; }
+    /// <summary>BED WATCH BUILD (2026.1109): how the bed check
+    /// for this job is done. "printer" means the dashboard
+    /// delegated the bed check to the printer's own
+    /// start-time foreign-object detection (Bambu only, per
+    /// Marlena's Nov 9 choice); anything else, including
+    /// absent, means manual bed confirmation on the
+    /// dashboard side (bed_confirmed flag). The bridge never
+    /// invents this: an absent or unknown value is manual.</summary>
+    [JsonPropertyName("bed_check")] public string BedCheck { get; init; } = "";
+    /// <summary>True only when the dashboard explicitly
+    /// delegated the bed check to the printer ("printer").</summary>
+    public bool BedCheckDelegatedToPrinter =>
+        string.Equals((BedCheck ?? "").Trim(), "printer", StringComparison.OrdinalIgnoreCase);
     [JsonPropertyName("dispatch")] public string Dispatch { get; init; } = "";
     /// <summary>Authenticated dashboard file route for this
     /// job (GET farm/file?job_id=...). Empty when the file
@@ -445,6 +458,16 @@ public sealed record PrinterStatus
     [JsonPropertyName("remaining_seconds")] public long? RemainingSeconds { get; init; }
     [JsonPropertyName("current_job_key")] public string? CurrentJobKey { get; init; }
     [JsonPropertyName("detail")] public string Detail { get; init; } = "";
+    /// <summary>BED WATCH BUILD (2026.1109): HMS codes the
+    /// printer currently reports, canonical "XXXX-XXXX"
+    /// form (Bambu only; Snapmaker/other adapters leave
+    /// this empty). Populated from the printer's live
+    /// report, never invented. The bridge watches for
+    /// 0300-8017 (foreign objects on the build plate)
+    /// after a delegated start. Older dashboards ignore
+    /// unknown JSON fields, so this is backward
+    /// compatible.</summary>
+    [JsonPropertyName("hms_codes")] public IReadOnlyList<string> HmsCodes { get; init; } = new List<string>();
     [JsonPropertyName("ams")] public AmsState Ams { get; init; } = new();
     [JsonPropertyName("camera_available")] public bool CameraAvailable { get; init; }
     [JsonPropertyName("light_state")] public string LightState { get; init; } = "unknown";
