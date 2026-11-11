@@ -40,6 +40,33 @@ public sealed class MachineConfigSync
     /// applied (0 = none applied yet).</summary>
     public int LastAppliedVersion { get; private set; }
 
+    /// <summary>BRIDGE PRIORITY (2026.1111.2142): printer
+    /// IPs this bridge owns, from the last successfully
+    /// fetched machine-config's owned_printers (CONTRACT.md
+    /// §Q.1). Empty until the first successful fetch.</summary>
+    public HashSet<string> OwnedPrinterIps { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>BRIDGE PRIORITY (2026.1111.2142): true
+    /// once a machine-config fetch has supplied an
+    /// owned_printers list (even an empty one — empty
+    /// owns nothing). False before the first fetch: the
+    /// bridge has not been told its ownership yet, so
+    /// IsOwned fails OPEN (every printer owned) and the
+    /// bridge behaves exactly as before until the
+    /// dashboard answers.</summary>
+    public bool HasOwnedList { get; private set; }
+
+    /// <summary>BRIDGE PRIORITY (2026.1111.2142): does
+    /// this bridge own the printer at this IP? Fails open
+    /// before the first owned_printers list arrives
+    /// (HasOwnedList false); after that, only an IP in
+    /// the list is owned. Whitespace-trimmed,
+    /// case-insensitive; a blank IP is never owned once
+    /// a list exists.</summary>
+    public bool IsOwned(string? ip) =>
+        !HasOwnedList ||
+        (!string.IsNullOrWhiteSpace(ip) && OwnedPrinterIps.Contains(ip.Trim()));
+
     public MachineConfigSync(DashboardClient dashboard)
     {
         _dashboard = dashboard;
@@ -113,6 +140,27 @@ public sealed class MachineConfigSync
         {
             Program.Log($"[machine-config] This bridge is {Program.Version}; the dashboard's latest known bridge version is {remote.BridgeVersionLatest.Trim()}.");
         }
+
+        // BRIDGE PRIORITY (2026.1111.2142): record the
+        // dashboard-assigned ownership from owned_printers
+        // (CONTRACT.md §Q.1). The list is the dashboard's
+        // decision — computed from the bridge priority
+        // order + heartbeat freshness — and the Worker
+        // applies it to the adapters (deferred printers
+        // stop connecting to MQTT). A failed fetch never
+        // reaches here, so a stale fetch never wipes the
+        // last known ownership; an empty list owns nothing.
+        var owned = new HashSet<string>(
+            (remote.OwnedPrinters ?? new List<string>())
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Select(s => s.Trim()),
+            StringComparer.OrdinalIgnoreCase);
+        var ownershipChanged = !HasOwnedList || !owned.SetEquals(OwnedPrinterIps);
+        OwnedPrinterIps = owned;
+        HasOwnedList = true;
+        Program.Log(ownershipChanged
+            ? $"[machine-config] Owned printers: {(owned.Count == 0 ? "(none — this bridge owns no printer)" : string.Join(", ", owned))}."
+            : "[machine-config] Owned printers unchanged.");
 
         if (changed)
         {

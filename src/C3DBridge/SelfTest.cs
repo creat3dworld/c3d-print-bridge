@@ -32,6 +32,16 @@
 //   minutes; `skip` with a detail when there has been no
 //   push window since connect.
 //
+// BRIDGE PRIORITY (2026.1111.2142): a printer this bridge
+// does not own (machine-config owned_printers) is
+// DEFERRED — its printer_reachable, ftp_cache and
+// mqtt_push checks all report `skip` with a detail naming
+// the printer and saying it is deferred to the
+// dashboard-assigned owner. Deferral is normal, never a
+// failure: a "fail" here would create a dashboard bridge
+// error for a printer this bridge is correctly standing
+// aside from.
+//
 // result is "pass" / "fail" / "skip". overall is "pass"
 // only when no check failed (skips do not fail it).
 
@@ -84,6 +94,28 @@ public sealed class SelfTestRunner
             checks.Add(await CheckSlicerAsync(cfg, slicer, ct));
         foreach (var adapter in adapters)
         {
+            // BRIDGE PRIORITY (2026.1111.2142): a deferred
+            // printer's checks are "skip", NEVER "fail".
+            // Deferral is normal — the dashboard assigned
+            // the printer to another bridge — and a failed
+            // self-test creates a dashboard bridge error,
+            // which deferral must never do. The detail names
+            // the printer and says it is deferred to the
+            // dashboard-assigned owner; no specific owner
+            // machine is named because machine-config never
+            // tells this bridge which bridge owns it.
+            // Reachability, FTP /cache and MQTT push are all
+            // skipped: none of them can be tested without
+            // the MQTT connection deferral forbids, and the
+            // owning bridge runs those checks itself.
+            if (adapter is BambuAdapter deferred && deferred.Deferred)
+            {
+                var detail = $"Printer '{deferred.Name}' ({deferred.Ip}) is deferred to the dashboard-assigned owner — this bridge does not own it, so no connection is attempted.";
+                checks.Add(new SelfTestCheck("printer_reachable", deferred.Ip, deferred.Name, "skip", detail));
+                checks.Add(new SelfTestCheck("ftp_cache", deferred.Ip, deferred.Name, "skip", detail));
+                checks.Add(new SelfTestCheck("mqtt_push", deferred.Ip, deferred.Name, "skip", detail));
+                continue;
+            }
             checks.Add(await CheckPrinterReachableAsync(cfg, adapter, ct));
             if (adapter is BambuAdapter bambu)
             {

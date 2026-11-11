@@ -148,6 +148,19 @@ public sealed class IpReconciler
             }
             else if (string.Equals(adapter.Type, "bambu", StringComparison.OrdinalIgnoreCase))
             {
+                // BRIDGE PRIORITY (2026.1111.2142): a
+                // deferred printer is not probed. It shows
+                // offline here precisely because this bridge
+                // does not own it — but identifying it on a
+                // new IP would still open an MQTT session to
+                // its broker and fight the owning bridge.
+                // The owning bridge reconciles its own
+                // printers; this one stands aside.
+                if (adapter is BambuAdapter deferredBambu && deferredBambu.Deferred)
+                {
+                    Program.Log($"[discovery] Skipping IP reconciliation for '{adapter.Name}': deferred to the dashboard-assigned owner (this bridge does not own it).");
+                    continue;
+                }
                 if (string.IsNullOrWhiteSpace(cfg.Serial) || string.IsNullOrWhiteSpace(cfg.AccessCode))
                 {
                     Program.Log($"[discovery] Cannot match '{adapter.Name}' by serial yet: no serial/access code is configured for it. Not guessing.");

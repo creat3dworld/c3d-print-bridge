@@ -16,6 +16,11 @@
 //      is unconfirmed, the status poll is likewise
 //      forced every tick until the printer shows
 //      printing, then normal cadence resumes.
+//   5. BRIDGE PRIORITY (2026.1111.2142): machine-config
+//      is re-checked every 2 minutes for ownership
+//      changes (owned_printers), so a bridge takes over
+//      a newly-owned printer — or stands aside from one
+//      it no longer owns — without a restart.
 //
 // What it NEVER does (thin-relay scope, owner-confirmed):
 // - It never picks a printer for a job: the dashboard assigns by
@@ -70,6 +75,16 @@ public sealed class Worker
     private readonly DateTime _startedUtc = DateTime.UtcNow;
     private bool _firstHeartbeatDone;
     private bool _heartbeatFailed;
+    // BRIDGE PRIORITY (2026.1111.2142): ownership re-check
+    // timer + last applied owned-IP snapshot. The dashboard
+    // reassigns ownership when the primary bridge goes
+    // offline; the bridge re-fetches machine-config every
+    // 2 minutes even when no heartbeat carried a newer
+    // machine_config_version, so a takeover is picked up
+    // without a restart and without waiting on a heartbeat.
+    private DateTime _lastOwnershipRecheckUtc = DateTime.UtcNow;
+    private HashSet<string> _ownedSnapshot = new(StringComparer.OrdinalIgnoreCase);
+    private bool _hasOwnedSnapshot;
     // MQTT-PUSH WATCHDOG (2026.1109.2140): detects a silent
     // Bambu push feed and actively recovers it (longer-wait
     // pushall, with backoff). Owns the mqtt_push_silent
@@ -135,9 +150,79 @@ public sealed class Worker
     {
         var updated = await _machineConfigSync.FetchAndApplyAsync(ct);
         if (updated is not null) ApplyUpdatedConfig(updated);
+        // BRIDGE PRIORITY (2026.1111.2142): apply ownership
+        // BEFORE the self-test, so a newly deferred printer
+        // already reports its checks as "skip" in this run.
+        ApplyOwnership();
         var afterSetup = await SlicerSetup.EnsureSlicersConfiguredAsync(_errorReporter, ct);
         if (afterSetup is not null) ApplyUpdatedConfig(afterSetup);
         await _selfTest.RunAsync(_cfg, _printers.All, _startedUtc, ct);
+    }
+
+    /// <summary>BRIDGE PRIORITY (2026.1111.2142): push the
+    /// dashboard-assigned ownership (MachineConfigSync,
+    /// from owned_printers) onto the Bambu adapters'
+    /// Deferred flags. Flipping a flag takes effect on
+    /// the next status poll with no restart: a printer
+    /// that becomes owned connects normally; one that
+    /// stops being owned stops connecting. Returns true
+    /// when any printer's ownership flipped, so the
+    /// caller can re-run the self-test (deferred checks
+    /// change from pass/fail to skip, or back). Only
+    /// ownership flips are logged — a steady state costs
+    /// no log line per fetch. Non-Bambu adapters have no
+    /// MQTT session to defer, so they are untouched.</summary>
+    private bool ApplyOwnership()
+    {
+        var changed = false;
+        foreach (var adapter in _printers.All)
+        {
+            if (adapter is not C3DBridge.Printers.BambuAdapter bambu) continue;
+            var owned = _machineConfigSync.IsOwned(bambu.Ip);
+            var wasDeferred = bambu.Deferred;
+            bambu.Deferred = !owned;
+            if (wasDeferred == bambu.Deferred) continue;
+            changed = true;
+            Program.Log(owned
+                ? $"[machine-config] Printer '{bambu.Name}' ({bambu.Ip}) is now owned by this bridge — MQTT connects normally."
+                : $"[machine-config] Printer '{bambu.Name}' ({bambu.Ip}) is deferred to the dashboard-assigned owner — this bridge will not connect to its MQTT broker.");
+        }
+        // Snapshot the owned set so a later fetch can tell
+        // whether ownership moved even when no adapter flag
+        // flipped (e.g. a printer was added to the config).
+        var current = _machineConfigSync.HasOwnedList
+            ? new HashSet<string>(_machineConfigSync.OwnedPrinterIps, StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!_hasOwnedSnapshot || !current.SetEquals(_ownedSnapshot))
+        {
+            if (_hasOwnedSnapshot && !changed)
+                Program.Log("[machine-config] Owned-printer list changed (no adapter flag flipped).");
+            _ownedSnapshot = current;
+            _hasOwnedSnapshot = true;
+        }
+        return changed;
+    }
+
+    /// <summary>BRIDGE PRIORITY (2026.1111.2142): the
+    /// timer re-check — re-fetch machine-config on the
+    /// ownership timer, apply any new ownership, and
+    /// re-run the self-test ONLY when ownership flipped
+    /// (a self-test every 2 minutes would keep spawning
+    /// slicer exes). A version bump still flows through
+    /// CheckMachineConfigVersionAsync's full path; this
+    /// is the backstop for an ownership change that
+    /// arrives with no heartbeat to carry the new
+    /// version. Never throws: a failed fetch keeps the
+    /// last known ownership, and the next tick retries.</summary>
+    private async Task RefreshOwnershipAsync(CancellationToken ct)
+    {
+        var updated = await _machineConfigSync.FetchAndApplyAsync(ct);
+        if (updated is not null) ApplyUpdatedConfig(updated);
+        if (ApplyOwnership())
+        {
+            Program.Log("[machine-config] Printer ownership changed; running the bridge self-test.");
+            await _selfTest.RunAsync(_cfg, _printers.All, _startedUtc, ct);
+        }
     }
 
     /// <summary>BRIDGE-CONFIG HEALTH (2026.1109.2139):
@@ -369,6 +454,24 @@ public sealed class Worker
                     {
                         _heartbeatFailed = true;
                     }
+                }
+
+                // BRIDGE PRIORITY (2026.1111.2142): re-check
+                // machine-config on a 2-minute timer, even
+                // when no heartbeat carried a newer
+                // machine_config_version. If the primary
+                // bridge goes offline, the dashboard
+                // reassigns ownership, and this bridge must
+                // take over (connect to the newly-owned
+                // printer) without a restart and without
+                // waiting for a heartbeat to notice. A fetch
+                // that changes nothing costs one GET and no
+                // self-test; only an ownership flip re-runs
+                // the self-test (see RefreshOwnershipAsync).
+                if (_dashboard.HasKey && now - _lastOwnershipRecheckUtc >= TimeSpan.FromMinutes(2))
+                {
+                    _lastOwnershipRecheckUtc = now;
+                    await RefreshOwnershipAsync(ct);
                 }
 
                 // 3. Job poll + execution + monitoring.

@@ -75,6 +75,26 @@ public sealed class BambuAdapter : IPrinterAdapter
     /// that never arrives for 10 minutes is silence,
     /// not "unknown".</summary>
     public DateTime LastPushUtc { get; private set; } = DateTime.MinValue;
+    /// <summary>BRIDGE PRIORITY (2026.1111.2142): true
+    /// when the dashboard's machine-config owned_printers
+    /// does NOT list this printer's IP — the dashboard
+    /// assigned it to another bridge, so this bridge
+    /// defers: no MQTT connection of any kind to this
+    /// printer (status poll, push recovery, start/pause/
+    /// cancel/lights/home/reboot publish). Set by the
+    /// Worker from MachineConfigSync whenever ownership
+    /// is (re-)fetched; flipping it takes effect on the
+    /// next poll with no restart. False before the first
+    /// machine-config fetch (fail-open: ownership unknown
+    /// yet, so the bridge behaves as before).</summary>
+    public bool Deferred { get; set; }
+    /// <summary>BRIDGE PRIORITY (2026.1111.2142): the
+    /// reason a deferred printer reports offline / refuses
+    /// a command. Deliberately generic about WHO owns it:
+    /// machine-config serves owned_printers only, never a
+    /// per-printer owner map, so this bridge was never told
+    /// which bridge owns it.</summary>
+    public string DeferredDetail => $"Printer '{Name}' ({Ip}) is deferred to the dashboard-assigned owner — this bridge does not own it (machine-config owned_printers), so it does not connect to its MQTT broker.";
     // 2026.1105-push-log: last push summary written to the log, so each
     // printer answer is recorded once per change (and once on the first
     // push) instead of once per status poll.
@@ -145,6 +165,16 @@ public sealed class BambuAdapter : IPrinterAdapter
 
     public async Task<PrinterStatus> GetStatusAsync(CancellationToken ct)
     {
+        // BRIDGE PRIORITY (2026.1111.2142): deferred — do
+        // not connect. A Bambu MQTT broker allows one
+        // client per printer, so connecting here would
+        // fight the owning bridge for the session. The
+        // status is "offline" with the deferral as the
+        // detail (never a guessed state), so the dashboard
+        // shows this bridge standing aside and the owning
+        // bridge's live report is the one that counts.
+        if (Deferred) return Offline(DeferredDetail);
+
         var (ok, reason) = CheckIdentity();
         if (!ok) return Offline(reason);
 
@@ -344,6 +374,9 @@ public sealed class BambuAdapter : IPrinterAdapter
     /// log (every attempt + outcome).</summary>
     public async Task<bool> AttemptPushRecoveryAsync(CancellationToken ct)
     {
+        // BRIDGE PRIORITY (2026.1111.2142): a deferred
+        // printer has no feed to recover — never connect.
+        if (Deferred) return false;
         if (!HasMqttIdentity) return false;
         var report = await FetchReportWithWaitAsync(TimeSpan.FromSeconds(20), ct);
         return report is not null;
@@ -361,6 +394,14 @@ public sealed class BambuAdapter : IPrinterAdapter
 
     private async Task<string?> FetchReportWithWaitAsync(TimeSpan wait, CancellationToken ct)
     {
+        // BRIDGE PRIORITY (2026.1111.2142): defense in
+        // depth — every MQTT connect in this adapter goes
+        // through here, so a deferred printer can never
+        // reach the broker even if a caller forgot to
+        // check Deferred first. No report, no error: the
+        // caller reports the printer offline/deferred.
+        if (Deferred) return null;
+
         var factory = new MqttFactory();
         using var client = factory.CreateMqttClient();
         var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -499,6 +540,14 @@ public sealed class BambuAdapter : IPrinterAdapter
 
     private async Task<(bool Ok, string Reason)> PublishCommandAsync(object command, CancellationToken ct)
     {
+        // BRIDGE PRIORITY (2026.1111.2142): a deferred
+        // printer takes no commands from this bridge —
+        // start, pause, cancel, lights, home and reboot
+        // all publish here, so one gate covers them all.
+        // Refused with the reason, never sent: sending
+        // would fight the owning bridge for the session.
+        if (Deferred) return (false, DeferredDetail);
+
         var (ok, reason) = CheckIdentity();
         if (!ok) return (false, reason);
 

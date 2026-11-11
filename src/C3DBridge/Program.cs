@@ -41,7 +41,7 @@ namespace C3DBridge;
 
 public static class Program
 {
-    public const string Version = "2026.1111.2141-selftest-version-dedupe";
+    public const string Version = "2026.1111.2142-bridge-priority-defer";
 
     // Single-instance, newest-wins: only one bridge runs at a time.
     // A running instance writes its version + pid to a temp file.

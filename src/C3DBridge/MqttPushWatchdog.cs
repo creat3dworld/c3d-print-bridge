@@ -136,6 +136,20 @@ public sealed class MqttPushWatchdog
         foreach (var adapter in adapters)
         {
             if (adapter is not BambuAdapter bambu) continue;
+            // BRIDGE PRIORITY (2026.1111.2142): a deferred
+            // printer is deliberately not connected to, so
+            // its silence is not silence — never report
+            // mqtt_push_silent for it and never attempt
+            // recovery. Any episode left open from before
+            // the printer became deferred is closed quietly
+            // (no report, no log spam on every tick).
+            if (bambu.Deferred)
+            {
+                var openEpisode = GetEpisode(bambu.Name);
+                if (openEpisode.SilenceSinceUtc != DateTime.MinValue)
+                    ResetEpisode(openEpisode);
+                continue;
+            }
             var episode = GetEpisode(bambu.Name);
 
             // Remember the last state the printer actually

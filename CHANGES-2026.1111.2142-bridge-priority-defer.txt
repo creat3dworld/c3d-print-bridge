@@ -1,0 +1,168 @@
+C3D Print Bridge - version 2026.1111.2142-bridge-priority-defer
+What is new in this version (vs 2026.1111.2141-selftest-version-dedupe):
+
+Bridge priority deferral (Marlena, Nov 11, 2026:
+"Bridges should always defer to the dashboard's
+decision"; bridge priority 3d1PC main, 3d2PC second).
+Live problem: 3d1PC (machine_id "3d1pc") and 3d2PC
+(machine_id "shop-pc") both connect to the same Bambu
+printers' MQTT brokers (P2S 10.0.0.125, X2D
+10.0.0.214), and a Bambu MQTT broker allows one
+client per printer, so the two bridges fight for the
+session. The dashboard (0177) is now the authority:
+GET bridge/machine-config serves owned_printers, an
+array of printer IP strings this bridge owns,
+computed from the bridge priority order + heartbeat
+freshness (120 seconds). This bridge reads it and
+stands aside from every printer it does not own.
+SOURCE ONLY - not deployed (deploy needs Marlena's
+separate Action1 sign-in approval).
+
+- (1) Ownership from machine-config (MachineConfigSync.cs):
+  the fetch now records owned_printers into OwnedPrinterIps
+  (HasOwnedList once a list has arrived). IsOwned(ip) is the
+  single verdict: it FAILS OPEN before the first fetch (no
+  list yet, so every printer is owned and the bridge behaves
+  exactly as before until the dashboard answers), and after
+  that only an IP in the list is owned. A failed fetch never
+  reaches the update, so a stale fetch never wipes the last
+  known ownership; a null list from JSON is treated as empty
+  (owns nothing, no crash); entries are trimmed and blank
+  entries ignored. An empty list owns nothing. No new wire
+  name: owned_printers was already defined by dashboard
+  0177 in CONTRACT.json (bridge_reads + dashboard_serves)
+  and the Models.cs property was already present.
+- (2) Deferral gate (Printers/BambuAdapter.cs): a Deferred
+  flag on the adapter. A deferred printer NEVER opens an
+  MQTT session: GetStatusAsync returns offline with the
+  deferral as the detail before any identity check or
+  connect; FetchReportWithWaitAsync returns null when
+  deferred (defense in depth — every MQTT connect in the
+  adapter goes through it); AttemptPushRecoveryAsync
+  returns false; PublishCommandAsync refuses with the
+  deferral reason, which covers start, pause, cancel,
+  lights, home and reboot in one gate (all publish here).
+  The detail is deliberately generic about WHO owns the
+  printer ("deferred to the dashboard-assigned owner"):
+  machine-config serves owned_printers only, never a
+  per-printer owner map, so this bridge was never told
+  which bridge owns it. FTPS upload is NOT gated (it is
+  not MQTT, and the dashboard never dispatches a job to a
+  bridge that does not own the printer; the offline status
+  blocks the farm gates first). Non-Bambu adapters have no
+  MQTT session to defer and are untouched.
+- (3) Ownership applied + re-checked without a restart
+  (Worker.cs): ApplyOwnership() pushes IsOwned onto each
+  Bambu adapter's Deferred flag after every machine-config
+  fetch (before the self-test in ApplyConfigChangeAsync, so
+  a newly deferred printer already reports skip in that
+  run). Flipping a flag takes effect on the next status
+  poll. A 2-minute timer re-check (RefreshOwnershipAsync)
+  re-fetches machine-config even when no heartbeat carried
+  a newer machine_config_version, so if the primary bridge
+  goes offline and the dashboard reassigns ownership, the
+  next bridge takes over (connects to the newly-owned
+  printer) without a restart and without waiting on a
+  heartbeat. A fetch that changes nothing costs one GET
+  and no self-test; only an ownership flip re-runs the
+  self-test. Only flips are logged; steady state is quiet.
+- (4) Deferral is normal, not a failure (SelfTest.cs):
+  a deferred printer's printer_reachable, ftp_cache and
+  mqtt_push checks all report result "skip" (never "fail")
+  with a detail naming the printer and saying it is
+  deferred to the dashboard-assigned owner. A failed
+  self-test creates a dashboard bridge error, and
+  deferral must not create errors; the overall self-test
+  still passes (skips do not fail it). The owning bridge
+  runs those checks itself. A deferred check also clears
+  a stale fail entry, so a later re-failure reports again.
+- (5) Watchdog stands aside too (MqttPushWatchdog.cs):
+  a deferred printer is never flagged silent — no
+  mqtt_push_silent report, no recovery attempt. An episode
+  left open from before the printer became deferred is
+  closed quietly. Owned printers are watched exactly as
+  before.
+- (6) IP reconciliation stands aside (IpReconciler.cs):
+  a deferred Bambu printer is not probed for a move —
+  identifying it on a new IP would still open an MQTT
+  session to its broker and fight the owning bridge. The
+  owning bridge reconciles its own printers.
+
+Contract-checker notes (for the parent's check-contract.py run):
+- No new wire key and no new error code in this build.
+  owned_printers is a dashboard-0177 contract field the
+  bridge already declared in Models.cs; this build only
+  reads it. No contract change.
+- Baseline (before this build) against the 0177
+  dashboard tree: 26 passed, 0 failed, PASS. After this
+  build: 26 passed, 0 failed, PASS - identical. The
+  bridge CONTRACT.md copy is byte-identical to the
+  dashboard canonical copy.
+- NOTE: the bare `python3 tools/check-contract.py`
+  invocation (no --dashboard-src) does NOT pass: it
+  aborts with "CHECK ERROR: dashboard handler
+  self_test_report not found in class-c3d-bridge.php"
+  because the script's hardcoded default dashboard tree
+  is the stale 0163 tree. That is pre-existing and
+  dashboard-side, not this build (no dashboard file and
+  no self-test wire name was touched here). The 26/0
+  PASS above was run with --dashboard-src
+  c3d-shipping-dashboard-2026.1111.0177, the current
+  dashboard tree that defines owned_printers — the same
+  way the 2141 build ran it against the then-current
+  0176 tree.
+
+Verification (this build, Linux VM):
+- dotnet build -c Release: succeeded, 0 warnings,
+  0 errors. dotnet publish -c Release -r win-x64
+  --self-contained false: succeeded; output in
+  publish-2026.1111.2142/ (2.8 MB; C3DBridge.exe
+  151,552 B, C3DBridge.dll 1,348,096 B).
+- Harness (/tmp/harness-2142, standalone console app
+  replicating the exact new method bodies with only the
+  bridge types stubbed out): 27 checks, ALL PASSED.
+  (a) non-owned printer skipped: empty owned_printers
+  defers both printers; deferred GetStatus is offline
+  with zero MQTT connects; deferred push recovery and
+  publish (start/pause/cancel/lights/home/reboot)
+  refused with zero connects, reason naming the
+  deferral. (b) owned printer connects normally
+  (status + publish). (c) takeover without restart: a
+  re-check flips only the newly-owned printer, it
+  connects on the next poll, the newly-deferred one
+  stops at once, re-applying the same ownership flips
+  nothing; fail-open before the first fetch; null list
+  treated as empty; IPs trimmed/deduped. (d) deferred
+  self-test checks are exactly the three contract names,
+  all "skip", detail naming printer + dashboard-assigned
+  owner, mixed owned+deferred overall still "pass".
+  (e) watchdog never reports/recovers a deferred
+  printer, closes a pre-existing episode quietly, still
+  reports + recovers an owned silent printer. (f)
+  reconciler does not probe a deferred printer, still
+  probes an owned one.
+
+NOT in this build / not verified here:
+- Nothing was deployed to any PC, no Action1 touched,
+  no key rotated, no bridge restarted, no print started,
+  nothing bought. Deploy needs Marlena's separate
+  Action1 sign-in approval, which is NOT given for
+  this task.
+- Live behaviour is UNVERIFIED: the end-to-end proof
+  (3d2PC standing aside from both printers while 3d1PC
+  is online, and 3d2PC taking over within ~2 minutes
+  when 3d1PC goes offline) can only happen on live
+  bridges after deploy. The harness proves the logic
+  branches, not the Windows run. After deploy, confirm
+  live that 3d2PC's self-test shows the deferred printers
+  as skip (not fail), that no new mqtt_push_silent errors
+  appear for deferred printers, and that the two bridges
+  no longer fight for the MQTT sessions.
+- Edge, accepted by design: if this bridge started a
+  print and then lost ownership of that printer (the
+  dashboard should not reassign a printer whose bridge
+  is online, so this needs a missed-heartbeat window),
+  its active-job monitor sees the printer offline and
+  fails the job after 10 minutes offline, as it does for
+  any lost printer. The print itself continues on the
+  printer; the owning bridge picks up its live state.
