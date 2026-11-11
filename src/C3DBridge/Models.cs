@@ -413,6 +413,12 @@ public sealed record MachineConfig
     [JsonPropertyName("printers")] public List<MachineConfigPrinter> Printers { get; init; } = new();
     [JsonPropertyName("bridge_version_latest")] public string BridgeVersionLatest { get; init; } = "";
     [JsonPropertyName("machine_config_version")] public int MachineConfigVersion { get; init; }
+    /// <summary>BRIDGE PRIORITY (2026.1111.0177) — printer IP
+    /// strings this bridge owns (CONTRACT.md §Q.1), computed
+    /// by the dashboard from the bridge priority order +
+    /// heartbeat freshness (120 seconds). The bridge skips MQTT
+    /// for printers it does not own; an empty list owns nothing.</summary>
+    [JsonPropertyName("owned_printers")] public List<string> OwnedPrinters { get; init; } = new();
 }
 
 /// <summary>One printer in the dashboard-held machine
