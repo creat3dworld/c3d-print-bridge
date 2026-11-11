@@ -56,12 +56,29 @@ public static class SlicerSetup
         _ => slicer,
     };
 
+    /// <summary>No-space folder name for a slicer word, for
+    /// the "<default location>\<NoSpaceName>\<exe>" search
+    /// (2026.1111.2141) — e.g. a default location of
+    /// D:\C3D-Tools\Slicers\ holding a "BambuStudio"
+    /// subfolder (no space) instead of "Bambu Studio".
+    /// "OrcaSlicer" is the same as its display name, so
+    /// that candidate simply repeats the display-name one
+    /// (one extra File.Exists call, no behaviour change).</summary>
+    private static string NoSpaceNameFor(string slicer) => slicer switch
+    {
+        "bambu-studio" => "BambuStudio",
+        "snapmaker-orca" => "SnapmakerOrca",
+        "orcaslicer" => "OrcaSlicer",
+        _ => slicer,
+    };
+
     /// <summary>Find a slicer's exe without touching the
     /// config: dashboard default location first (directly
     /// under it, in a slicer-word subfolder, in a
-    /// display-name subfolder), then the C:\Program Files
-    /// fallback paths. Returns the first path that
-    /// actually exists, or null when nothing is found.</summary>
+    /// display-name subfolder, in a no-space subfolder),
+    /// then the C:\Program Files fallback paths. Returns
+    /// the first path that actually exists, or null when
+    /// nothing is found.</summary>
     public static string? FindSlicerExe(string slicer, IReadOnlyDictionary<string, string> defaultLocations)
     {
         var exe = MachineInfo.ExeNameFor(slicer);
@@ -73,6 +90,7 @@ public static class SlicerSetup
                 Path.Combine(loc.Trim(), exe),
                 Path.Combine(loc.Trim(), slicer, exe),
                 Path.Combine(loc.Trim(), DisplayNameFor(slicer), exe),
+                Path.Combine(loc.Trim(), NoSpaceNameFor(slicer), exe),
             })
             {
                 try { if (File.Exists(candidate)) return candidate; } catch { /* an unusable path is a miss, not a crash */ }

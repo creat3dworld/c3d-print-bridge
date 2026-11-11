@@ -1,0 +1,128 @@
+C3D Print Bridge - version 2026.1111.2141-selftest-version-dedupe
+What is new in this version (vs 2026.1109.2140-mqtt-push-watchdog):
+
+Self-test version + dedupe fix (Marlena, Nov 11, 2026:
+"Anyway to fix the bridge error?"). Live error data, read
+from the dashboard Farm tab Nov 11 09:07-09:09 EST: 37
+unacknowledged bridge errors. 31 are self_test_failed (18
+on 3d1PC, 13 on 3d2PC), and the dominant, STILL-OCCURRING
+issue is the OrcaSlicer version: "Slicer 'orcaslicer'
+exists at 'D:\C3D-Tools\Slicers\OrcaSlicer\orca-slicer.exe'
+but its file version could not be read." (5x on 3d1PC,
+newest Nov 11 08:05 EST) and the same at 'C:\Program
+Files\OrcaSlicer\orca-slicer.exe' (6x on 3d2PC), plus
+"Failing checks: slicer_orcaslicer" variants (7x on
+3d2PC). Root cause: orca-slicer.exe is a launcher stub
+with no readable file version, and the self-test FAILED
+the check on an unreadable version before ever trying to
+run the exe. The slicer_bambu_studio "not configured" /
+"missing" errors (5x + 3x + 3x, all Nov 10 16:59-20:06
+UTC) all PREDATE the Nov 10 slicer-path fix and are stale;
+no new bambu-studio errors since. The ftp_cache and
+mqtt_push_silent errors are NOT code (P2S has no LAN
+access code; X2D FTP 530; P2S FAILED since Nov 10 02:12
+with HMS 0500040000010003, clearable only by Marlena in
+person) and are NOT touched by this build. SOURCE ONLY -
+not deployed (deploy needs Marlena's separate Action1
+sign-in approval).
+
+- (1) Self-test version check (SelfTest.cs,
+  CheckSlicerAsync): an unreadable file version no longer
+  fails the check. If FileVersionInfo returns empty or
+  throws, the check proceeds to the runnable test (start
+  the exe hidden, watch 5 seconds) and the detail says
+  the version is "unknown (file version unreadable)".
+  The runnable test is the authority: a slicer that
+  starts passes; a missing exe, or one that cannot be
+  started, still fails exactly as before. This stops the
+  ongoing OrcaSlicer version errors on both PCs.
+- (2) SlicerSetup subfolder candidates (SlicerSetup.cs,
+  FindSlicerExe): a no-space folder name is now tried when
+  resolving a slicer under the dashboard default location
+  - BambuStudio, SnapmakerOrca, OrcaSlicer - in addition
+  to the existing direct, slicer-word, and display-name
+  ("Bambu Studio" / "Snapmaker Orca" / "OrcaSlicer")
+  candidates. "OrcaSlicer" repeats its display-name
+  candidate (one extra File.Exists call, no behaviour
+  change). A working local path is still never
+  overwritten; discovery only fills a gap.
+- (3) Self-test reporting dedupe (SelfTest.cs, RunAsync):
+  each check now has a per-check dedupe key
+  ("check|printer_ip") with report-on-transition. A
+  failing check reports an error only when it TRANSITIONS
+  into fail; a check that keeps failing does not re-report
+  on every self-test run (startup, reconnect,
+  machine-config change) - the dashboard already has the
+  alert. A recovery (pass/skip) clears the entry, so a
+  later re-failure reports again. The self-test REPORT
+  itself is still sent on every run; only the duplicate
+  error reports are suppressed. In-memory only: a bridge
+  restart re-reports a still-failing check once (one fresh
+  alert per restart, not one per self-test run). The
+  ErrorReporter 15-minute throttle is unchanged and still
+  applies underneath. No new error type, no change to the
+  error-reporting channel, no wire name renamed.
+
+Contract-checker notes (for the parent's check-contract.py run):
+- No new wire key and no new error code in this build.
+  No contract field was needed; no contract change.
+- Baseline (before this build) against the 0176
+  dashboard tree: 26 passed, 0 failed, PASS. After this
+  build: 26 passed, 0 failed, PASS - identical. The
+  bridge CONTRACT.md copy is byte-identical to the
+  dashboard canonical copy.
+
+Verification (this build, Linux VM):
+- dotnet build -c Release: succeeded, 0 warnings,
+  0 errors. dotnet publish -c Release -r win-x64
+  --self-contained false: succeeded; output in
+  publish-2026.1111.2141/ (2.8 MB; C3DBridge.exe
+  151,552 B, C3DBridge.dll 1,342,976 B).
+- Harness (/tmp/harness-2141, standalone console app
+  replicating the exact new method bodies with only the
+  bridge types stubbed out): 14 checks, ALL PASSED.
+  Fix 1: old code FAILS a version-less exe; new code
+  PASSES it via the runnable check (both the exit-0 and
+  the still-running-at-timeout cases), the pass detail
+  says the version is unknown, a missing exe still
+  fails, and an unstartable file still fails. Fix 3:
+  two failing checks report twice on run 1, zero new
+  reports on runs 2-3 (same failures), a recovery
+  clears the state, and a re-failure after recovery
+  reports again (3 total). Fix 2: FindSlicerExe finds
+  an exe in a no-space "BambuStudio" subfolder and in
+  a no-space "SnapmakerOrca" subfolder, and returns
+  null (no crash, no false positive) when nothing is
+  found.
+
+NOT in this build / not verified here:
+- Nothing was deployed to any PC, no Action1 touched,
+  no key rotated, no bridge restarted, no print started,
+  nothing bought. Deploy needs Marlena's separate
+  Action1 sign-in approval, which is NOT given for
+  this task.
+- Live behaviour is UNVERIFIED: the end-to-end proof
+  (OrcaSlicer passing self-test on a real Windows
+  bridge, and no new self_test_failed errors after
+  deploy) can only happen on a live bridge after
+  deploy. The harness proves the logic branches, not
+  the Windows run. After deploy, confirm live that the
+  self-test passes on both PCs and that no new
+  slicer_orcaslicer errors appear.
+- The ftp_cache (P2S no access code, X2D 530) and
+  mqtt_push_silent (P2S FAILED, HMS 0500040000010003)
+  errors are unchanged by this build and will keep
+  occurring until their non-code causes are addressed
+  (P2S access code needs Marlena's authorization to
+  copy from the shop PC; X2D FTP 530 needs
+  investigation; the P2S fault clears only in person).
+- Observation, NOT fixed here (pre-existing, out of
+  scope): MachineInfo.ExeNameFor("orcaslicer") returns
+  "orcaslicer.exe", but the real OrcaSlicer installer
+  puts "orca-slicer.exe" (hyphenated) on disk - so
+  SlicerSetup.FindSlicerExe would not discover an
+  OrcaSlicer installed at a default location by exe
+  name alone. The live machines already have correct
+  configured paths, so this does not affect them; it
+  is a discovery gap for a fresh install. Left for a
+  later build if Marlena wants it.

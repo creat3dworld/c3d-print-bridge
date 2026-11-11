@@ -13,10 +13,15 @@
 // Checks (contract words):
 //   slicer_bambu_studio / slicer_snapmaker_orca /
 //   slicer_orcaslicer — exe present and runnable: exists +
-//   file version readable + the process starts within a
-//   short timeout (hidden window, killed afterwards — GUI
-//   apps may not exit; "started and still running at
-//   timeout" counts as runnable).
+//   the process starts within a short timeout (hidden
+//   window, killed afterwards — GUI apps may not exit;
+//   "started and still running at timeout" counts as
+//   runnable). A file version that cannot be read does
+//   NOT fail the check (2026.1111.2141): orca-slicer.exe
+//   is a launcher stub with no readable file version, and
+//   the runnable test is the authority — the detail says
+//   the version is unknown. A missing exe, or an exe that
+//   cannot be started, still fails.
 //   printer_reachable — TCP connect to a configured
 //   printer (3s timeout; Bambu 8883, Moonraker 7125, or
 //   the configured port when set).
@@ -45,6 +50,21 @@ public sealed class SelfTestRunner
 {
     private readonly DashboardClient _dashboard;
     private readonly ErrorReporter _errors;
+
+    /// <summary>Last reported self-test state per check, by
+    /// check identity ("check|printer_ip"). A failing check
+    /// reports an error only when it TRANSITIONS into fail
+    /// (2026.1111.2141): a check that keeps failing does not
+    /// re-report on every self-test run (startup, reconnect,
+    /// machine-config change) — the dashboard already has
+    /// the alert. A recovery (pass/skip) clears the entry,
+    /// so a later re-failure reports again. The self-test
+    /// REPORT itself is still sent on every run; only the
+    /// duplicate error reports are suppressed. In-memory
+    /// only: a bridge restart re-reports a still-failing
+    /// check once, which is correct (one fresh alert per
+    /// restart, not one per self-test run).</summary>
+    private readonly Dictionary<string, string> _lastSelfTestState = new(StringComparer.Ordinal);
 
     public SelfTestRunner(DashboardClient dashboard, ErrorReporter errors)
     {
@@ -84,11 +104,30 @@ public sealed class SelfTestRunner
         {
             Program.Log($"[self-test] The self-test report failed to send: {ex.Message}");
         }
+        // REPORT-ON-TRANSITION (2026.1111.2141): a failing
+        // check reports an error only when it transitions
+        // into fail. A check that keeps failing does not
+        // re-report on every self-test run — the dashboard
+        // already has the alert. A recovery clears the
+        // entry, so a later re-failure reports again.
         foreach (var failed in checks.Where(c => c.Result == "fail"))
         {
+            var key = failed.Check + "|" + failed.PrinterIp;
+            if (_lastSelfTestState.TryGetValue(key, out var last) && last == "fail")
+            {
+                Program.Log($"[self-test] Still failing, already reported: {failed.Check} ({failed.PrinterName}) — no repeat error report.");
+                continue;
+            }
+            _lastSelfTestState[key] = "fail";
             await _errors.ReportAsync("self_test_failed", "error", "self_test",
                 $"Self-test failed: {failed.Check}" + (string.IsNullOrWhiteSpace(failed.PrinterName) ? "." : $" on '{failed.PrinterName}'."),
                 failed.Detail, "", "", ct);
+        }
+        foreach (var recovered in checks.Where(c => c.Result != "fail"))
+        {
+            var key = recovered.Check + "|" + recovered.PrinterIp;
+            if (_lastSelfTestState.Remove(key))
+                Program.Log($"[self-test] Recovered: {recovered.Check} ({recovered.PrinterName}) is {recovered.Result} — a later failure will report again.");
         }
     }
 
@@ -106,11 +145,19 @@ public sealed class SelfTestRunner
             return new SelfTestCheck(check, "", "", "fail", $"Slicer '{slicer}' is not configured (no executable path in bridge-config.json).");
         if (!File.Exists(path))
             return new SelfTestCheck(check, "", "", "fail", $"Slicer '{slicer}' is configured at '{path}' but the executable was not found.");
+        // 2026.1111.2141 — an unreadable file version does
+        // NOT fail the check. orca-slicer.exe is a launcher
+        // stub with no readable file version, and the live
+        // errors were all this exact failure ("exists at
+        // ... but its file version could not be read") on an
+        // exe that runs fine. The runnable test below is the
+        // authority: if the exe starts, the check passes and
+        // the detail says the version is unknown. A missing
+        // exe, or one that cannot be started, still fails.
         string version;
         try { version = System.Diagnostics.FileVersionInfo.GetVersionInfo(path).FileVersion ?? ""; }
-        catch (Exception ex) { return new SelfTestCheck(check, "", "", "fail", $"Slicer '{slicer}' exists at '{path}' but its file version could not be read ({ex.Message})."); }
-        if (string.IsNullOrWhiteSpace(version))
-            return new SelfTestCheck(check, "", "", "fail", $"Slicer '{slicer}' exists at '{path}' but its file version could not be read.");
+        catch (Exception ex) { Program.Log($"[self-test] Slicer '{slicer}' at '{path}': file version unreadable ({ex.Message}) — continuing to the runnable check."); version = ""; }
+        var versionDisplay = string.IsNullOrWhiteSpace(version) ? "unknown (file version unreadable)" : version;
         // Runnable: start it hidden and watch briefly. GUI
         // slicers stay running (that counts as runnable);
         // one that exits at once must exit 0. Killed
@@ -144,11 +191,11 @@ public sealed class SelfTestRunner
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 // Still running at the 5s timeout: runnable.
-                return new SelfTestCheck(check, "", "", "pass", $"Slicer '{slicer}' version {version} started and was still running at the 5s timeout.");
+                return new SelfTestCheck(check, "", "", "pass", $"Slicer '{slicer}' version {versionDisplay} started and was still running at the 5s timeout.");
             }
             if (proc.ExitCode == 0)
-                return new SelfTestCheck(check, "", "", "pass", $"Slicer '{slicer}' version {version} started and exited 0.");
-            return new SelfTestCheck(check, "", "", "fail", $"Slicer '{slicer}' version {version} started but exited with code {proc.ExitCode}.");
+                return new SelfTestCheck(check, "", "", "pass", $"Slicer '{slicer}' version {versionDisplay} started and exited 0.");
+            return new SelfTestCheck(check, "", "", "fail", $"Slicer '{slicer}' version {versionDisplay} started but exited with code {proc.ExitCode}.");
         }
         finally
         {
